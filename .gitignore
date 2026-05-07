@@ -3,3 +3,6 @@ obj/
 *.user
 *.suo
 .vs/
+
+# Local dev tooling — runtime UI inspector, not part of mod source.
+UnityExplorer.ML.IL2CPP.net6preview.interop.dll
