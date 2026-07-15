@@ -12,7 +12,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-[assembly: MelonInfo(typeof(POGMods.Config.PogConfigMelon), "POG Config", "1.0.7", "largo", "")]
+[assembly: MelonInfo(typeof(POGMods.Config.PogConfigMelon), "POG Config", POGMods.Config.PogConfigMelon.VERSION, "largo", "")]
 
 namespace POGMods.Config
 {
@@ -494,7 +494,8 @@ namespace POGMods.Config
                 if (Input.GetMouseButtonDown(0) && !ConfigBehaviour.HitTest(_valueBgRt, Input.mousePosition))
                 { StopEditing(true); return; }
 
-                if (Input.GetKeyDown(KeyCode.Escape))  { StopEditing(false); return; }
+                if (Input.GetKeyDown(KeyCode.Escape))
+                { ConfigBehaviour.EscConsumed = true; StopEditing(false); return; }
                 if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
                 { StopEditing(true); return; }
 
@@ -731,6 +732,8 @@ namespace POGMods.Config
         {
             if (!_listening) return;
             if (SliderEntry.AnyInputActive) return;
+            if (Input.GetKeyDown(KeyCode.Escape)) // cancel binding
+            { ConfigBehaviour.EscConsumed = true; ToggleListen(); return; }
             foreach (KeyCode kc in Enum.GetValues(typeof(KeyCode)))
             {
                 if (kc == KeyCode.None || kc == KeyCode.Escape) continue;
@@ -812,6 +815,8 @@ namespace POGMods.Config
 
     public class PogConfigMelon : MelonMod
     {
+        public const string VERSION = "1.0.8";
+
         public override void OnInitializeMelon()
         {
             try { HarmonyInstance.PatchAll(); }
@@ -822,7 +827,7 @@ namespace POGMods.Config
             UnityEngine.Object.DontDestroyOnLoad(runner);
             runner.hideFlags = HideFlags.HideAndDontSave;
             runner.AddComponent<ConfigBehaviour>();
-            MelonLogger.Msg("POG Config 1.0.7 loaded.");
+            MelonLogger.Msg($"POG Config {VERSION} loaded.");
         }
     }
 
@@ -835,6 +840,11 @@ namespace POGMods.Config
         internal static bool PanelOpen;
         internal static void RequestClose() => _instance?.DoClose();
         private static ConfigBehaviour _instance;
+
+        // Set by any handler that reacted to Escape this frame (cancel search edit,
+        // cancel value edit, cancel key binding) so the same press doesn't ALSO
+        // close the panel. Reset at the start of every Update.
+        internal static bool EscConsumed;
 
         private const float PANEL_W    = 980f;
         private const float PANEL_H    = 600f;
@@ -859,9 +869,7 @@ namespace POGMods.Config
         private Image         _modsBtnImg;
 
         // ── Main-menu injected NetworkMenuButton clone ────────────────────────
-        private GameObject        _mainMenuModsBtn;
-        private NetworkMenuButton _mainMenuModsNmb;
-        private bool              _modsHovered;
+        private GameObject _mainMenuModsBtn;
 
         // ── Content area (right) ─────────────────────────────────────────────
         private Transform     _scrollContent;
@@ -958,11 +966,10 @@ namespace POGMods.Config
                 }
 
                 // Main menu — inject a real NetworkMenuButton into the game's Buttons Panel.
+                // Hover/selection visuals come natively from NetworkMenuButton
+                // (OnPointerEnter → SelectButton → m_menu.SetSelected → OnSelect).
                 if (_isMainMenu && !_panelOpen)
-                {
                     EnsureMainMenuModsBtn();
-                    UpdateModsHoverSelection();
-                }
 
                 // DIAG: Shift+M — log who's under the cursor so we can debug missed clicks.
                 if (_isMainMenu && Input.GetKey(KeyCode.LeftShift) && Input.GetKeyDown(KeyCode.M))
@@ -981,6 +988,7 @@ namespace POGMods.Config
                     if (es != null && es.currentSelectedGameObject != null)
                         es.SetSelectedGameObject(null);
 
+                    EscConsumed = false;
                     UpdateThumbDrag();
                     HandleScroll();
                     HandleSearchInput();
@@ -988,8 +996,10 @@ namespace POGMods.Config
                         foreach (var e in entries)
                             e.OnUpdate();
 
-                    // Esc closes the panel (after HandleSearchInput so search-Esc cancels editing first).
-                    if (!_editingSearch && !KeyEntry.AnyWaiting && Input.GetKeyDown(KeyCode.Escape))
+                    // Esc closes the panel — but only if no handler above already used
+                    // this press to cancel an edit/binding (EscConsumed).
+                    if (!_editingSearch && !KeyEntry.AnyWaiting && !EscConsumed
+                        && Input.GetKeyDown(KeyCode.Escape))
                         DoClose();
                 }
                 else if (_scrollDragging || _sidebarDragging)
@@ -1305,6 +1315,7 @@ namespace POGMods.Config
             if (!_editingSearch) return;
             if (Input.GetKeyDown(KeyCode.Escape))
             {
+                EscConsumed = true;
                 _editingSearch = false;
                 SliderEntry.AnyInputActive = false;
                 _searchQuery = "";
@@ -1373,12 +1384,22 @@ namespace POGMods.Config
 
             try
             {
-                var clone = UnityEngine.Object.Instantiate(template.gameObject);
+                // Parent must be set IN the Instantiate call: NetworkMenuButton.Awake runs
+                // during Instantiate and resolves m_menu = GetComponentInParent<NetworkMenu>()
+                // (m_menu is a private non-serialized field, so it is NOT copied from the
+                // template). A parentless clone gets m_menu = null, and then the native
+                // hover path (OnPointerEnter → SelectButton → m_menu.SetSelected) throws
+                // before enabling the pointer/selection images — no highlight on hover.
+                var clone = UnityEngine.Object.Instantiate(
+                    template.gameObject, template.transform.parent, false);
                 clone.name = "POGModsButton";
-                clone.transform.SetParent(template.transform.parent, false);
 
                 var nmb = clone.GetComponent<NetworkMenuButton>();
                 if (nmb == null) { UnityEngine.Object.Destroy(clone); return; }
+
+                // Belt and braces in case Awake ran before the parent chain was active.
+                if (nmb.m_menu == null)
+                    nmb.m_menu = template.m_menu != null ? template.m_menu : NetworkMenu.Instance;
 
                 if (nmb.m_buttonText != null) nmb.m_buttonText.text = "MODS";
 
@@ -1417,8 +1438,6 @@ namespace POGMods.Config
 
                 clone.SetActive(true);
                 _mainMenuModsBtn = clone;
-                _mainMenuModsNmb = nmb;
-                _modsHovered = false;
 
                 // Force layout / canvas rebuild.
                 var parent = template.transform.parent;
@@ -1433,29 +1452,6 @@ namespace POGMods.Config
             {
                 MelonLogger.Warning($"[POGConfig] EnsureMainMenuModsBtn: {ex.Message}");
             }
-        }
-
-        // EventSystem.SetSelectedGameObject alone doesn't trigger the visuals — the highlight
-        // is wired through NetworkMenuButton.OnPointerClick→SelectButton (private). For hover
-        // we drive m_selectionImage / m_pointerImage directly.
-        private void UpdateModsHoverSelection()
-        {
-            if (_mainMenuModsBtn == null || _mainMenuModsNmb == null) return;
-            var rt = _mainMenuModsBtn.transform as RectTransform;
-            if (rt == null) return;
-
-            bool over = RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null);
-            if (over == _modsHovered) return;
-            _modsHovered = over;
-
-            if (_mainMenuModsNmb.m_selectionImage != null)
-                _mainMenuModsNmb.m_selectionImage.enabled = over;
-            if (_mainMenuModsNmb.m_pointerImage != null)
-                _mainMenuModsNmb.m_pointerImage.enabled = over;
-
-            var es = UnityEngine.EventSystems.EventSystem.current;
-            if (es != null && over && es.currentSelectedGameObject != _mainMenuModsBtn)
-                es.SetSelectedGameObject(_mainMenuModsBtn);
         }
 
         private static NetworkMenuButton FindStartButton()
@@ -1877,7 +1873,13 @@ namespace POGMods.Config
 
             _sidebarTotalH = y + 4f;
             _sidebarOffset = 0f;
-            if (_sidebarListRt != null) _sidebarListRt.sizeDelta = new Vector2(0, _sidebarTotalH);
+            if (_sidebarListRt != null)
+            {
+                _sidebarListRt.sizeDelta = new Vector2(0, _sidebarTotalH);
+                // Snap the list back to top — offset is reset above, so without this the
+                // previous scroll position persists and items hide above the viewport.
+                _sidebarListRt.anchoredPosition = Vector2.zero;
+            }
 
             float listVpH = SIDEBAR_LIST_H;
             bool needsScroll = _sidebarTotalH > listVpH;
