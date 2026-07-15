@@ -33,6 +33,9 @@ namespace POGMods.Config
                 if (_white != null) return _white;
                 var t = new Texture2D(1, 1);
                 t.SetPixel(0, 0, Color.white);
+                // Point filtering keeps flat-color rects hard-edged; bilinear sampling of a
+                // 1x1 sprite softens edges unevenly under non-integer canvas scale.
+                t.filterMode = FilterMode.Point;
                 t.Apply();
                 _white = Sprite.Create(t, new Rect(0, 0, 1, 1), new Vector2(0.5f, 0.5f));
                 return _white;
@@ -172,15 +175,21 @@ namespace POGMods.Config
             var tRt = UI.Rt(tGo);
             tRt.anchorMin = tRt.anchorMax = new Vector2(1f, 0.5f);
             tRt.pivot = new Vector2(1f, 0.5f);
-            tRt.sizeDelta = new Vector2(40, 24);
+            tRt.sizeDelta = new Vector2(22, 22); // square checkbox
             tRt.anchoredPosition = Vector2.zero;
 
             _toggle = tGo.AddComponent<Toggle>();
             var bg = UI.Make("BG", tGo.transform);
             UI.Stretch(UI.Rt(bg));
             var bgImg = UI.AddImage(bg, new Color(0.18f, 0.18f, 0.2f));
+            // Checkmark: fixed-size square centred in the box (not stretch-with-insets) —
+            // centred rects stay symmetric under fractional canvas scale, insets don't.
             var ck = UI.Make("Check", bg.transform);
-            UI.Stretch(UI.Rt(ck), 3, 3, 3, 3);
+            var ckRt = UI.Rt(ck);
+            ckRt.anchorMin = ckRt.anchorMax = new Vector2(0.5f, 0.5f);
+            ckRt.pivot = new Vector2(0.5f, 0.5f);
+            ckRt.sizeDelta = new Vector2(14, 14);
+            ckRt.anchoredPosition = Vector2.zero;
             var ckImg = UI.AddImage(ck, new Color(1f, 0.82f, 0.3f));
 
             _toggle.targetGraphic = bgImg;
@@ -805,9 +814,16 @@ namespace POGMods.Config
     {
         static bool Prefix()
         {
-            if (!ConfigBehaviour.PanelOpen) return true;
-            ConfigBehaviour.RequestClose();
-            return false;
+            if (ConfigBehaviour.PanelOpen)
+            {
+                ConfigBehaviour.RequestClose();
+                return false;
+            }
+            // Same-frame race: ConfigBehaviour.Update may have already closed the panel
+            // with THIS Esc press before Rewired fires TogglePauseMenu — without this
+            // guard the same press would then also close the pause menu itself.
+            if (ConfigBehaviour.LastCloseFrame == Time.frameCount) return false;
+            return true;
         }
     }
 
@@ -815,7 +831,7 @@ namespace POGMods.Config
 
     public class PogConfigMelon : MelonMod
     {
-        public const string VERSION = "1.0.8";
+        public const string VERSION = "1.0.9";
 
         public override void OnInitializeMelon()
         {
@@ -841,6 +857,10 @@ namespace POGMods.Config
         internal static void RequestClose() => _instance?.DoClose();
         private static ConfigBehaviour _instance;
 
+        // Frame on which the panel was last closed — lets the TogglePauseMenu patch
+        // swallow the same Esc press that closed the panel (see PatchTogglePauseMenu).
+        internal static int LastCloseFrame = -1;
+
         // Set by any handler that reacted to Escape this frame (cancel search edit,
         // cancel value edit, cancel key binding) so the same press doesn't ALSO
         // close the panel. Reset at the start of every Update.
@@ -862,14 +882,15 @@ namespace POGMods.Config
         private bool _isPause, _isMainMenu, _panelOpen;
         private bool _updateErrLogged;
 
-        // ── Floating MODS button (pause menu only since 1.6.0) ───────────────
+        // ── Floating MODS button (pause-menu FALLBACK if native injection fails) ─
         private RectTransform _modsBtnRt;
         private RectTransform _doneBtnRt;
         private GameObject    _overlay;
         private Image         _modsBtnImg;
 
-        // ── Main-menu injected NetworkMenuButton clone ────────────────────────
+        // ── Injected NetworkMenuButton clones (main menu + pause menu) ────────
         private GameObject _mainMenuModsBtn;
+        private GameObject _pauseModsBtn;
 
         // ── Content area (right) ─────────────────────────────────────────────
         private Transform     _scrollContent;
@@ -956,8 +977,19 @@ namespace POGMods.Config
                 _isPause    = state == "NetworkMenuPauseState";
                 _isMainMenu = state == "NetworkMenuMainState";
 
-                // Floating MODS button — pause menu only.
-                bool showFloating = _isPause && !_panelOpen;
+                // Main menu — inject a real NetworkMenuButton into the game's Buttons Panel.
+                // Hover/selection visuals come natively from NetworkMenuButton
+                // (OnPointerEnter → SelectButton → m_menu.SetSelected → OnSelect).
+                if (_isMainMenu && !_panelOpen)
+                    EnsureMainMenuModsBtn();
+
+                // Pause menu — same native injection as the main menu.
+                if (_isPause && !_panelOpen)
+                    EnsurePauseModsBtn();
+
+                // Floating MODS button — pause-menu FALLBACK, only if native injection
+                // didn't take (template button not found this frame).
+                bool showFloating = _isPause && !_panelOpen && _pauseModsBtn == null;
                 if (_modsBtnRt != null)
                 {
                     _modsBtnRt.gameObject.SetActive(showFloating);
@@ -965,15 +997,13 @@ namespace POGMods.Config
                     else if (_modsBtnImg != null) _modsBtnImg.color = new Color(0, 0, 0, 0);
                 }
 
-                // Main menu — inject a real NetworkMenuButton into the game's Buttons Panel.
-                // Hover/selection visuals come natively from NetworkMenuButton
-                // (OnPointerEnter → SelectButton → m_menu.SetSelected → OnSelect).
-                if (_isMainMenu && !_panelOpen)
-                    EnsureMainMenuModsBtn();
-
                 // DIAG: Shift+M — log who's under the cursor so we can debug missed clicks.
                 if (_isMainMenu && Input.GetKey(KeyCode.LeftShift) && Input.GetKeyDown(KeyCode.M))
                     DiagnoseAtCursor();
+
+                // DIAG: Shift+P — dump the pause-menu button container (layout, spacing, children).
+                if (_isPause && Input.GetKey(KeyCode.LeftShift) && Input.GetKeyDown(KeyCode.P))
+                    DiagnosePauseMenu();
 
                 bool inMenu = _isPause || _isMainMenu;
                 if (!inMenu && _panelOpen) DoClose();
@@ -1361,27 +1391,58 @@ namespace POGMods.Config
 
         private void PositionModsButton()
         {
-            // Pause-menu position only. Main menu uses an injected NetworkMenuButton
-            // (see EnsureMainMenuModsBtn) so the floating button never shows there.
+            // Fallback only: shown when the native pause-menu injection could not find a
+            // template button. Both menus normally use an injected NetworkMenuButton.
             _modsBtnRt.anchorMin = _modsBtnRt.anchorMax = new Vector2(0.5f, 0.685f);
             _modsBtnRt.sizeDelta = new Vector2(260, 34);
             _modsBtnRt.anchoredPosition = Vector2.zero;
         }
 
-        // ── Main-menu button injection ────────────────────────────────────────
-        // Clones the game's START button so we get matching style, click sound,
-        // hover highlight, and keyboard/gamepad navigation for free.
-        // Hierarchy: PitOfGoblin_Menu3D ▸ Main Panel ▸ Buttons Panel (GridLayoutGroup).
-        // We land at sibling index 1 (right after START).
+        // ── NetworkMenuButton injection ───────────────────────────────────────
+        // Clones one of the game's own buttons so we get matching style, click
+        // sound, hover highlight, EventSystem selection and keyboard/gamepad
+        // navigation for free. Used for both the main menu (clone START) and the
+        // pause menu (clone SETTINGS/INVITE/RESUME) — the button sits INSIDE the
+        // game's real button column, so the layout spaces it correctly and there
+        // are no hard-coded overlay coordinates to collide with.
 
         private void EnsureMainMenuModsBtn()
         {
             // Unity's overloaded == treats destroyed objects as null — covers scene reloads.
             if (_mainMenuModsBtn != null) return;
 
-            var template = FindStartButton();
+            var template = FindButtonByLabel("START");
             if (template == null) return; // menu not fully built yet, retry next frame
 
+            _mainMenuModsBtn = InjectModsClone(template, "POGModsButton", 1); // after START
+            if (_mainMenuModsBtn != null)
+                MelonLogger.Msg("[POGConfig] MODS button injected into main menu.");
+        }
+
+        private void EnsurePauseModsBtn()
+        {
+            if (_pauseModsBtn != null) return;
+
+            // Prefer a button that's clearly in the main pause column (not DISCONNECT,
+            // which may live in a separate footer container). Main-menu buttons are
+            // inactive during pause, so "SETTINGS" resolves to the pause one here.
+            var template = FindButtonByLabel("SETTINGS", "INVITE", "RESUME", "SHOW LOBBY CODE");
+            if (template == null) return; // pause column not ready → floating fallback shows
+
+            // Sibling index 0 = top of the column, above SHOW LOBBY CODE/INVITE.
+            _pauseModsBtn = InjectModsClone(template, "POGModsButtonPause", 0);
+            if (_pauseModsBtn != null)
+            {
+                string parent = template.transform.parent != null ? template.transform.parent.name : "?";
+                MelonLogger.Msg($"[POGConfig] MODS button injected into pause menu (parent='{parent}').");
+            }
+        }
+
+        // Clone `template`, relabel to MODS, rewire its click to toggle our panel,
+        // place at `siblingIndex` in the template's own parent. Returns the clone
+        // (or null on failure so the caller can fall back).
+        private GameObject InjectModsClone(NetworkMenuButton template, string cloneName, int siblingIndex)
+        {
             try
             {
                 // Parent must be set IN the Instantiate call: NetworkMenuButton.Awake runs
@@ -1392,10 +1453,10 @@ namespace POGMods.Config
                 // before enabling the pointer/selection images — no highlight on hover.
                 var clone = UnityEngine.Object.Instantiate(
                     template.gameObject, template.transform.parent, false);
-                clone.name = "POGModsButton";
+                clone.name = cloneName;
 
                 var nmb = clone.GetComponent<NetworkMenuButton>();
-                if (nmb == null) { UnityEngine.Object.Destroy(clone); return; }
+                if (nmb == null) { UnityEngine.Object.Destroy(clone); return null; }
 
                 // Belt and braces in case Awake ran before the parent chain was active.
                 if (nmb.m_menu == null)
@@ -1407,8 +1468,8 @@ namespace POGMods.Config
                 if (btn != null)
                 {
                     // RemoveAllListeners only clears RUNTIME listeners. The prefab persistent
-                    // listener (NetworkMenuMainState.OnStartButton) is serialized data and
-                    // gets copied into our clone — clicking MODS would still fire OnStartButton.
+                    // listener (e.g. OnStartButton / OnSettingsButton) is serialized data and
+                    // gets copied into our clone — clicking MODS would still fire it.
                     // Disable each persistent entry explicitly.
                     btn.onClick.RemoveAllListeners();
                     int pcount = btn.onClick.GetPersistentEventCount();
@@ -1430,31 +1491,30 @@ namespace POGMods.Config
                     btn.navigation = nav;
                 }
 
-                clone.transform.SetSiblingIndex(1); // after START
+                clone.transform.SetSiblingIndex(siblingIndex);
 
                 // Defensive — Instantiate should already preserve raycasts.
                 var images = clone.GetComponentsInChildren<UnityEngine.UI.Image>(true);
                 foreach (var img in images) img.raycastTarget = true;
 
                 clone.SetActive(true);
-                _mainMenuModsBtn = clone;
 
-                // Force layout / canvas rebuild.
-                var parent = template.transform.parent;
-                var parentRt = parent as RectTransform;
+                // Force layout / canvas rebuild so a LayoutGroup re-spaces the column.
+                var parentRt = template.transform.parent as RectTransform;
                 if (parentRt != null)
                     UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(parentRt);
                 Canvas.ForceUpdateCanvases();
 
-                MelonLogger.Msg("[POGConfig] MODS button injected into main menu.");
+                return clone;
             }
             catch (Exception ex)
             {
-                MelonLogger.Warning($"[POGConfig] EnsureMainMenuModsBtn: {ex.Message}");
+                MelonLogger.Warning($"[POGConfig] InjectModsClone('{cloneName}'): {ex.Message}");
+                return null;
             }
         }
 
-        private static NetworkMenuButton FindStartButton()
+        private static NetworkMenuButton FindButtonByLabel(params string[] labels)
         {
             var all = Resources.FindObjectsOfTypeAll<NetworkMenuButton>();
             foreach (var b in all)
@@ -1464,10 +1524,60 @@ namespace POGMods.Config
                 var tmp = b.m_buttonText;
                 if (tmp == null) continue;
                 string t = tmp.text;
-                if (!string.IsNullOrEmpty(t) && t.Equals("START", StringComparison.OrdinalIgnoreCase))
-                    return b;
+                if (string.IsNullOrEmpty(t)) continue;
+                foreach (var lbl in labels)
+                    if (t.Equals(lbl, StringComparison.OrdinalIgnoreCase)) return b;
             }
             return null;
+        }
+
+        // Shift+P in pause: dump the button column so we can see how the game
+        // spaces its buttons (VerticalLayoutGroup + spacing/padding vs absolute)
+        // and where our injected MODS button landed.
+        private static void DiagnosePauseMenu()
+        {
+            try
+            {
+                MelonLogger.Msg("[POGConfig] === PAUSE DIAG ===");
+                var all = Resources.FindObjectsOfTypeAll<NetworkMenuButton>();
+                Transform container = null;
+                foreach (var b in all)
+                {
+                    if (b == null || !b.gameObject.activeInHierarchy) continue;
+                    var rt = b.transform as RectTransform;
+                    var tmp = b.m_buttonText;
+                    string t = tmp != null ? tmp.text : "?";
+                    string parent = b.transform.parent != null ? b.transform.parent.name : "<none>";
+                    MelonLogger.Msg($"[POGConfig]   BTN '{t}' go='{b.gameObject.name}' parent='{parent}' " +
+                        $"idx={b.transform.GetSiblingIndex()} pos={(rt != null ? rt.anchoredPosition.ToString() : "?")} " +
+                        $"size={(rt != null ? rt.sizeDelta.ToString() : "?")}");
+                    if (container == null && (t == "SETTINGS" || t == "RESUME" || t == "INVITE"))
+                        container = b.transform.parent;
+                }
+
+                if (container == null) { MelonLogger.Msg("[POGConfig]   no pause container found"); return; }
+
+                MelonLogger.Msg($"[POGConfig]   CONTAINER '{container.name}' children={container.childCount}");
+                foreach (var c in container.gameObject.GetComponents<Component>())
+                    if (c != null) MelonLogger.Msg($"[POGConfig]     comp: {c.GetIl2CppType().Name}");
+
+                var vlg = container.gameObject.GetComponent<UnityEngine.UI.VerticalLayoutGroup>();
+                if (vlg != null)
+                    MelonLogger.Msg($"[POGConfig]     VLG spacing={vlg.spacing} pad(t/b={vlg.padding.top}/{vlg.padding.bottom}) " +
+                        $"align={vlg.childAlignment} ctrlH={vlg.childControlHeight} forceH={vlg.childForceExpandHeight}");
+
+                for (int i = 0; i < container.childCount; i++)
+                {
+                    var ch = container.GetChild(i);
+                    var crt = ch as RectTransform;
+                    var nb = ch.GetComponent<NetworkMenuButton>();
+                    string lbl = (nb != null && nb.m_buttonText != null) ? nb.m_buttonText.text : "";
+                    MelonLogger.Msg($"[POGConfig]     child[{i}] '{ch.name}' lbl='{lbl}' active={ch.gameObject.activeSelf} " +
+                        $"pos={(crt != null ? crt.anchoredPosition.ToString() : "?")} size={(crt != null ? crt.sizeDelta.ToString() : "?")}");
+                }
+            }
+            catch (Exception ex)
+            { MelonLogger.Warning($"[POGConfig] DiagnosePauseMenu: {ex.Message}"); }
         }
 
         private static void DiagnoseAtCursor()
@@ -1525,6 +1635,7 @@ namespace POGMods.Config
             if (_overlay != null) _overlay.SetActive(false);
             _panelOpen = false;
             PanelOpen  = false;
+            LastCloseFrame = Time.frameCount;
             POGConfig.PanelOpen = false;
             KeyEntry.AnyWaiting = false;
             _scrollDragging = false;

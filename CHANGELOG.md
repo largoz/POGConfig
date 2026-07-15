@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.9
+
+- The pause-menu MODS button is now a real `NetworkMenuButton` injected at the top of the pause button column — native yellow selector, hover, click sound and gamepad navigation, and the column layout spaces it automatically (same approach as the main menu since 1.0.7). The old floating overlay button remains only as a fallback if the injection target is not found.
+- Fixed: pressing Esc to close the MOD SETTINGS panel in the pause menu no longer also closes the pause menu itself with the same key press.
+- Toggle checkboxes are now square (22×22) instead of rectangular, and the yellow checkmark is drawn as a centred square so it no longer looks unevenly inset at fractional UI scales.
+- Groundwork for upcoming releases: a more native settings window (game-aware state so Esc/back behaves like vanilla screens), a reworked keybind system with up to three universal keyboard/mouse slots per action, a read-only "Vanilla" tab mirroring the game's own binds, and bind-conflict detection with a quick-fix popup.
+
 ## 1.0.8
 
 - Fixed: hovering the MODS button in the main menu now shows the selector and yellow highlight exactly like the native buttons. The cloned button is now instantiated directly under the Buttons Panel so it resolves its internal `NetworkMenu` reference; the old manual hover workaround was removed.
