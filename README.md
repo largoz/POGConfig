@@ -18,6 +18,18 @@ In-game configuration UI framework for **Pit of Goblin** mods (MelonLoader, IL2C
 
 ---
 
+## Dev helper
+
+`build_and_deploy.py` — builds this project (`dotnet build -c Release`) and
+copies the resulting DLL straight into `../../Mods/`. Convenience only, no
+required arguments:
+
+```powershell
+python build_and_deploy.py
+```
+
+---
+
 ## Quick Start (for developers)
 
 Add a reference to `POGConfig.dll`, then register your entries in `OnInitializeMelon()`:
