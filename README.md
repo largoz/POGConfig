@@ -8,6 +8,8 @@ In-game configuration UI framework for **Pit of Goblin** mods (MelonLoader, IL2C
 - `OptionsSliderEntry` (discrete mode selector)
 - `KeyEntry` (runtime key rebinding)
 
+**Repo:** [github.com/LargoScript/POGConfig](https://github.com/LargoScript/POGConfig) · **Wiki:** [`Wiki/`](Wiki/) ([on GitHub](https://github.com/LargoScript/POGConfig/tree/main/Wiki))
+
 ---
 
 ## Installation (for players)
