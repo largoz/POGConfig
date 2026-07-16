@@ -6,6 +6,7 @@ using HarmonyLib;
 using Il2CppGame.Menu;
 using Il2CppInterop.Runtime.Injection;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Il2CppRewired;
 using Il2CppTMPro;
 using MelonLoader;
 using UnityEngine;
@@ -100,6 +101,13 @@ namespace POGMods.Config
         internal virtual void BuildRow(Transform parent, TMP_FontAsset font) { }
         internal virtual void OnUpdate() { }
         internal virtual void BindPrefs(MelonPreferences_Category cat) { }
+
+        // Restore-defaults support. CaptureDefault runs at Register time BEFORE BindPrefs
+        // loads any saved value, so "default" = whatever the mod hardcoded, not whatever
+        // happens to be saved. RestoreDefault re-applies it through the wrapped setter,
+        // which also persists; row UI resyncs via the entry's own OnUpdate.
+        internal virtual void CaptureDefault() { }
+        internal virtual void RestoreDefault() { }
     }
 
     /// <summary>Visual section header within a mod's settings list. Has no value, no persistence.</summary>
@@ -149,10 +157,15 @@ namespace POGMods.Config
         private bool _lastValue;
         private bool _suppressToggleCallback;
 
+        private bool _defaultValue;
+
         public ToggleEntry(string label, Func<bool> get, Action<bool> set)
             : this(label, get, set, null) { }
         public ToggleEntry(string label, Func<bool> get, Action<bool> set, string prefKey) : base(label)
         { _get = get; _set = set; _prefKey = prefKey; }
+
+        internal override void CaptureDefault() => _defaultValue = _get();
+        internal override void RestoreDefault() { _set(_defaultValue); _lastValue = _defaultValue; }
 
         internal override void BindPrefs(MelonPreferences_Category cat)
         {
@@ -274,6 +287,10 @@ namespace POGMods.Config
             _wholeNumbers = wholeNumbers;
             _stepPointsCount = Math.Max(0, stepPointsCount);
         }
+
+        private float _defaultValue;
+        internal override void CaptureDefault() => _defaultValue = _get();
+        internal override void RestoreDefault() => ApplyValue(_defaultValue, true);
 
         internal override void BindPrefs(MelonPreferences_Category cat)
         {
@@ -547,6 +564,11 @@ namespace POGMods.Config
             _prefKey = prefKey;
         }
 
+        private int _defaultIndex;
+        internal override void CaptureDefault() => _defaultIndex = _get();
+        internal override void RestoreDefault()
+            => _set(Mathf.Clamp(_defaultIndex, 0, Math.Max(0, _options.Length - 1)));
+
         internal override void BindPrefs(MelonPreferences_Category cat)
         {
             if (_prefKey == null || _options.Length == 0) return;
@@ -634,124 +656,234 @@ namespace POGMods.Config
         }
     }
 
+    /// <summary>
+    /// Keybind entry with up to <see cref="MaxSlots"/> universal slots — any slot accepts
+    /// either a keyboard key or a mouse button (KeyCode.Mouse0–Mouse6). Unlike the vanilla
+    /// game's Rewired-driven binding screen (2 fixed keyboard slots + 1 fixed mouse slot),
+    /// mod slots have no type restriction; whichever key or button the player presses is
+    /// recorded in the slot they clicked.
+    /// </summary>
     public class KeyEntry : ConfigEntry
     {
-        private readonly Func<KeyCode> _get;
-        private Action<KeyCode> _set;
-        private readonly string _prefKey;
+        public const int MaxSlots = 3;
 
-        // Set to true to allow binding mouse buttons (Mouse0–Mouse6).
-        public bool AllowMouseButtons { get; set; } = false;
+        private readonly Func<int, KeyCode> _get;
+        private Action<int, KeyCode> _set;
+        private readonly string _prefKey;
+        private readonly int _slotCount;
+
+        // Slots are universal: any slot accepts a keyboard key OR a mouse button
+        // (Mouse0–Mouse6). Defaults to true for both constructors. A mod can set it
+        // false to restrict an entry to keyboard-only.
+        public bool AllowMouseButtons { get; set; } = true;
 
         internal static bool AnyWaiting;
-        private bool _listening;
-        private TextMeshProUGUI _keyText;
-        private TextMeshProUGUI _btnText;
-        private RectTransform _clearBtnRt;
+        private int _listeningSlot = -1;
+        private int _listenStartFrame;
 
+        private readonly TextMeshProUGUI[] _slotTexts = new TextMeshProUGUI[MaxSlots];
+        private readonly Image[] _slotBgs = new Image[MaxSlots];
+        private readonly RectTransform[] _bindRects = new RectTransform[MaxSlots];
+        private readonly GameObject[] _clearGos = new GameObject[MaxSlots];
+
+        // Last KeyCode rendered per slot — guards the per-frame refresh so TMP text is
+        // only reassigned on change. Unknown sentinel forces a refresh on the next update.
+        private const KeyCode UnknownKey = (KeyCode)(-1);
+        private readonly KeyCode[] _lastShown = new KeyCode[MaxSlots];
+
+        private static readonly Color NormalBg    = new Color(0.18f, 0.18f, 0.2f);
+        private static readonly Color ListeningBg = new Color(0.30f, 0.24f, 0.08f);
+
+        // ── Legacy single-slot API (binary-compatible with 1.0.x mods) ──
         public KeyEntry(string label, Func<KeyCode> get, Action<KeyCode> set)
             : this(label, get, set, null) { }
-        public KeyEntry(string label, Func<KeyCode> get, Action<KeyCode> set, string prefKey) : base(label)
-        { _get = get; _set = set; _prefKey = prefKey; }
+        public KeyEntry(string label, Func<KeyCode> get, Action<KeyCode> set, string prefKey)
+            : this(label, i => get(), (i, v) => set(v), prefKey, 1) { }
+
+        // ── Multi-slot API — up to MaxSlots universal keyboard/mouse slots ──
+        // get(slot)/set(slot, value) index into whatever storage the mod uses (e.g. a
+        // KeyCode[3] field). prefKey persists slot 0 as-is (compatible with the legacy
+        // single-slot format) and slots 1/2 as "<prefKey>_2" / "<prefKey>_3".
+        public KeyEntry(string label, Func<int, KeyCode> get, Action<int, KeyCode> set,
+                        string prefKey, int slotCount) : base(label)
+        {
+            _get = get;
+            _set = set;
+            _prefKey = prefKey;
+            _slotCount = Mathf.Clamp(slotCount, 1, MaxSlots);
+        }
+
+        private readonly KeyCode[] _defaults = new KeyCode[MaxSlots];
+        internal override void CaptureDefault()
+        { for (int i = 0; i < _slotCount; i++) _defaults[i] = _get(i); }
+        internal override void RestoreDefault()
+        {
+            StopListening();
+            for (int i = 0; i < _slotCount; i++) _set(i, _defaults[i]);
+        }
 
         internal override void BindPrefs(MelonPreferences_Category cat)
         {
             if (_prefKey == null) return;
-            var pref = cat.CreateEntry(_prefKey, _get().ToString());
-            if (Enum.TryParse<KeyCode>(pref.Value, out var loaded)) _set(loaded);
+            var prefs = new MelonPreferences_Entry<string>[_slotCount];
+            for (int i = 0; i < _slotCount; i++)
+            {
+                string key = i == 0 ? _prefKey : $"{_prefKey}_{i + 1}";
+                var pref = cat.CreateEntry(key, _get(i).ToString());
+                if (Enum.TryParse<KeyCode>(pref.Value, out var loaded)) _set(i, loaded);
+                prefs[i] = pref;
+            }
             var orig = _set;
-            _set = v => { orig(v); pref.Value = v.ToString(); MelonPreferences.Save(); };
+            _set = (slot, v) =>
+            {
+                orig(slot, v);
+                if (slot >= 0 && slot < prefs.Length)
+                { prefs[slot].Value = v.ToString(); MelonPreferences.Save(); }
+            };
         }
 
         internal override void BuildRowInto(GameObject row, TMP_FontAsset font)
         {
+            _listeningSlot = -1; // fresh row: any prior listen belonged to destroyed UI
+
             var lbl = UI.Make("Label", row.transform);
             UI.Rt(lbl).anchorMin = Vector2.zero;
-            UI.Rt(lbl).anchorMax = new Vector2(0.42f, 1f);
+            UI.Rt(lbl).anchorMax = new Vector2(0.40f, 1f);
             UI.Rt(lbl).offsetMin = UI.Rt(lbl).offsetMax = Vector2.zero;
-            UI.AddText(lbl, Label, font, 14, new Color(0.88f, 0.88f, 0.88f));
+            var lblTmp = UI.AddText(lbl, Label, font, 14, new Color(0.88f, 0.88f, 0.88f));
+            lblTmp.enableWordWrapping = false;
+            lblTmp.overflowMode = TextOverflowModes.Ellipsis;
 
-            var keyGo = UI.Make("KeyName", row.transform);
-            UI.Rt(keyGo).anchorMin = new Vector2(0.42f, 0f);
-            UI.Rt(keyGo).anchorMax = new Vector2(0.70f, 1f);
-            UI.Rt(keyGo).offsetMin = UI.Rt(keyGo).offsetMax = Vector2.zero;
-            _keyText = UI.AddText(keyGo, KeyDisplayName(_get()), font, 13, new Color(1f, 0.82f, 0.3f),
-                                  TextAlignmentOptions.MidlineRight);
+            // Fixed 3-column grid regardless of how many slots this entry uses, filled
+            // from the RIGHT edge — a single-slot entry (the default) sits in the
+            // rightmost column instead of floating mid-row.
+            const float slotsStart = 0.40f;
+            const float gap = 0.012f;
+            float slotW = (1f - slotsStart - gap * (MaxSlots - 1)) / MaxSlots;
 
-            // Clear button
-            var clearGo = UI.Make("ClearBtn", row.transform);
-            _clearBtnRt = UI.Rt(clearGo);
-            _clearBtnRt.anchorMin = _clearBtnRt.anchorMax = new Vector2(1f, 0.5f);
-            _clearBtnRt.pivot = new Vector2(1f, 0.5f);
-            _clearBtnRt.sizeDelta = new Vector2(56, 28);
-            _clearBtnRt.anchoredPosition = new Vector2(-96f, 0f);
-            UI.AddImage(clearGo, new Color(0.30f, 0.18f, 0.18f));
-            var clearTxtGo = UI.Make("Text", clearGo.transform);
-            UI.Stretch(UI.Rt(clearTxtGo));
-            UI.AddText(clearTxtGo, "Clear", font, 12, new Color(0.85f, 0.55f, 0.55f), TextAlignmentOptions.Center);
-            Clicks.Register(_clearBtnRt, ClearBind);
+            for (int i = 0; i < _slotCount; i++)
+            {
+                int slot = i; // capture for closures
+                int col = MaxSlots - _slotCount + i; // right-aligned column index
+                float x0 = slotsStart + col * (slotW + gap);
+                float x1 = x0 + slotW;
 
-            // Change button
-            var btnGo = UI.Make("ChangeBtn", row.transform);
-            var btnRt = UI.Rt(btnGo);
-            btnRt.anchorMin = btnRt.anchorMax = new Vector2(1f, 0.5f);
-            btnRt.pivot = new Vector2(1f, 0.5f);
-            btnRt.sizeDelta = new Vector2(90, 28);
-            btnRt.anchoredPosition = Vector2.zero;
-            UI.AddImage(btnGo, new Color(0.25f, 0.25f, 0.3f));
+                var slotGo = UI.Make("Slot" + i, row.transform);
+                var slotRt = UI.Rt(slotGo);
+                slotRt.anchorMin = new Vector2(x0, 0.14f);
+                slotRt.anchorMax = new Vector2(x1, 0.86f);
+                slotRt.offsetMin = slotRt.offsetMax = Vector2.zero;
+                _slotBgs[i] = UI.AddImage(slotGo, NormalBg);
 
-            var btnTxtGo = UI.Make("Text", btnGo.transform);
-            UI.Stretch(UI.Rt(btnTxtGo));
-            _btnText = UI.AddText(btnTxtGo, "Change", font, 12,
-                                  new Color(0.85f, 0.85f, 0.85f), TextAlignmentOptions.Center);
-            Clicks.Register(btnRt, ToggleListen);
+                // Bind area covers the slot minus a 14px column reserved for the clear "x" —
+                // a separate, non-overlapping rect so Clicks.Map (first-hit-wins over an
+                // unordered Dictionary) never has to arbitrate between the two regions.
+                var bindGo = UI.Make("Bind", slotGo.transform);
+                var bindRt = UI.Rt(bindGo);
+                UI.Stretch(bindRt, 0, 14, 0, 0);
+                _bindRects[i] = bindRt;
+                Clicks.Register(bindRt, () => StartListening(slot));
+
+                var txtGo = UI.Make("Text", slotGo.transform);
+                var txtRt = UI.Rt(txtGo);
+                UI.Stretch(txtRt, 4, 16, 0, 0);
+                var txt = UI.AddText(txtGo, KeyDisplayName(_get(i)), font, 12,
+                                     new Color(1f, 0.82f, 0.3f), TextAlignmentOptions.MidlineLeft);
+                txt.enableWordWrapping = false;
+                txt.overflowMode = TextOverflowModes.Ellipsis;
+                _slotTexts[i] = txt;
+                _lastShown[i] = _get(i);
+
+                // Clear "x" — small corner box pinned top-right, only shown while the slot
+                // holds a real bind.
+                var clearGo = UI.Make("Clear", slotGo.transform);
+                var clearRt = UI.Rt(clearGo);
+                clearRt.anchorMin = clearRt.anchorMax = new Vector2(1f, 1f);
+                clearRt.pivot = new Vector2(1f, 1f);
+                clearRt.sizeDelta = new Vector2(14, 16);
+                clearRt.anchoredPosition = Vector2.zero;
+                UI.AddText(clearGo, "x", font, 11, new Color(0.85f, 0.5f, 0.5f), TextAlignmentOptions.Center);
+                Clicks.Register(clearRt, () => ClearSlot(slot));
+                _clearGos[i] = clearGo;
+                clearGo.SetActive(_get(i) != KeyCode.None);
+            }
         }
 
-        private static string KeyDisplayName(KeyCode kc) => kc == KeyCode.None ? "— none —" : kc.ToString();
+        private static string KeyDisplayName(KeyCode kc) => kc == KeyCode.None ? "—" : kc.ToString();
 
-        private void ClearBind()
+        private void StartListening(int slot)
         {
-            if (_listening) { _listening = false; AnyWaiting = false; }
-            _set(KeyCode.None);
-            if (_keyText != null) _keyText.text = KeyDisplayName(KeyCode.None);
-            if (_btnText != null) _btnText.text = "Change";
+            if (AnyWaiting) return;
+            _listeningSlot = slot;
+            AnyWaiting = true;
+            _listenStartFrame = Time.frameCount;
+            if (_slotTexts[slot] != null) _slotTexts[slot].text = "…";
+            if (_slotBgs[slot] != null) _slotBgs[slot].color = ListeningBg;
         }
 
-        private void ToggleListen()
+        private void StopListening()
         {
-            if (_listening)
-            {
-                _listening = false; AnyWaiting = false;
-                if (_keyText != null) _keyText.text = _get().ToString();
-                if (_btnText != null) _btnText.text = "Change";
-            }
-            else if (!AnyWaiting)
-            {
-                _listening = true; AnyWaiting = true;
-                if (_keyText != null) _keyText.text = "[ press key ]";
-                if (_btnText != null) _btnText.text = "Cancel";
-            }
-            else
-            {
-                if (_keyText != null) _keyText.text = KeyDisplayName(_get());
-            }
+            if (_listeningSlot < 0) return;
+            if (_slotBgs[_listeningSlot] != null) _slotBgs[_listeningSlot].color = NormalBg;
+            // The slot text still shows the "…" placeholder; invalidate the cache so the
+            // next OnUpdate refresh pass rewrites it from the actual value.
+            _lastShown[_listeningSlot] = UnknownKey;
+            _listeningSlot = -1;
+            AnyWaiting = false;
+        }
+
+        private void ClearSlot(int slot)
+        {
+            if (_listeningSlot == slot) StopListening();
+            _set(slot, KeyCode.None);
+            _lastShown[slot] = KeyCode.None;
+            if (_slotTexts[slot] != null) _slotTexts[slot].text = KeyDisplayName(KeyCode.None);
+            if (_clearGos[slot] != null) _clearGos[slot].SetActive(false);
         }
 
         internal override void OnUpdate()
         {
-            if (!_listening) return;
+            // Panel closed mid-listen: SetOverlayVisible(false) force-clears the global
+            // AnyWaiting flag but can't reach into entries. Resync on the next update so
+            // this entry doesn't stay stuck listening (olive background, and it would
+            // silently capture the first key pressed after the panel reopens).
+            if (_listeningSlot >= 0 && !AnyWaiting) StopListening();
+
+            if (_listeningSlot < 0)
+            {
+                for (int i = 0; i < _slotCount; i++)
+                {
+                    var kc = _get(i);
+                    // Only touch the UI when the value actually changed — a TMP text
+                    // assignment triggers a mesh rebuild even for an identical string.
+                    if (kc == _lastShown[i]) continue;
+                    _lastShown[i] = kc;
+                    if (_slotTexts[i] != null) _slotTexts[i].text = KeyDisplayName(kc);
+                    if (_clearGos[i] != null) _clearGos[i].SetActive(kc != KeyCode.None);
+                }
+                return;
+            }
+
             if (SliderEntry.AnyInputActive) return;
             if (Input.GetKeyDown(KeyCode.Escape)) // cancel binding
-            { ConfigBehaviour.EscConsumed = true; ToggleListen(); return; }
+            { ConfigBehaviour.EscConsumed = true; StopListening(); return; }
+
+            // Swallow the very click that opened listening — otherwise, with
+            // AllowMouseButtons on (the default for multi-slot entries), that same
+            // Mouse0-down would be captured as the bind in the same frame.
+            if (Time.frameCount == _listenStartFrame) return;
+
             foreach (KeyCode kc in Enum.GetValues(typeof(KeyCode)))
             {
                 if (kc == KeyCode.None || kc == KeyCode.Escape) continue;
                 if (!AllowMouseButtons && kc >= KeyCode.Mouse0 && kc <= KeyCode.Mouse6) continue;
                 if (!Input.GetKeyDown(kc)) continue;
-                _set(kc);
-                _listening = false; AnyWaiting = false;
-                if (_keyText != null) _keyText.text = KeyDisplayName(kc);
-                if (_btnText != null) _btnText.text = "Change";
+                int slot = _listeningSlot;
+                _set(slot, kc);
+                StopListening();
+                _lastShown[slot] = kc;
+                if (_slotTexts[slot] != null) _slotTexts[slot].text = KeyDisplayName(kc);
+                if (_clearGos[slot] != null) _clearGos[slot].SetActive(true);
                 break;
             }
         }
@@ -780,6 +912,13 @@ namespace POGMods.Config
 
         public static void Register(string modName, List<ConfigEntry> entries, ModInfo info)
         {
+            foreach (var e in entries)
+            {
+                try { e.CaptureDefault(); } // must run BEFORE BindPrefs overwrites with saved values
+                catch (Exception ex)
+                { MelonLogger.Warning($"[POGConfig] CaptureDefault '{modName}': {ex.Message}"); }
+            }
+
             try
             {
                 var cat = MelonPreferences.CreateCategory(modName.Replace(" ", "_"));
@@ -807,6 +946,292 @@ namespace POGMods.Config
         internal static IReadOnlyList<ModRecord> GetAllRecords() => _mods;
     }
 
+    // ── Vanilla binds (live mirror, editable) ────────────────────────────────
+    // POGConfig owns none of this data — Rewired does. Rows are read fresh from the live
+    // keyboard/mouse ActionElementMaps of player 0 every time the Vanilla tab is opened,
+    // and edits are written straight back through the same Rewired API the game's own
+    // Controls screen uses (Replace/Create/DeleteElementMap + userDataStore.Save), then
+    // VERIFIED by re-reading the maps. Single source of truth — nothing to synchronize.
+    internal static class VanillaBinds
+    {
+        internal class Slot
+        {
+            public string Display = "—";
+            public int MapId;           // ActionElementMap id; 0 = slot empty
+            public ControllerMap Map;   // owning map when bound (null otherwise)
+        }
+
+        internal class Row
+        {
+            public string Action;
+            public int ActionId;
+            public Pole? PoleFilter;    // null = plain button action; else this axis direction
+            public readonly Slot[] Slots = { new Slot(), new Slot(), new Slot() }; // KB1, KB2, Mouse
+        }
+
+        private static Player.ControllerHelper.MapHelper _maps;
+        private static ControllerMap _kbFallbackMap;    // for creating a bind in an empty slot
+        private static ControllerMap _mouseFallbackMap;
+        private static Controller _mouse;
+
+        // NOTE ON IL2CPP COLLECTIONS: interop IEnumerable<T>/IEnumerator<T> proxies are
+        // NOT foreach-able and do NOT implement the BCL System.Collections interfaces
+        // (a cast to System.Collections.IEnumerable silently fails). The reliable shapes
+        // are: concrete Il2CppSystem...List<T> (has Count + indexer) — Rewired offers
+        // "fill a List, return count" overloads for exactly this — and IList<T>/
+        // ICollection<T> interface proxies reached via TryCast<>().
+
+        // Returns null if Rewired isn't ready / the read failed for any reason — the
+        // caller shows an "unavailable" message instead of a broken or empty table.
+        internal static List<Row> TryRead()
+        {
+            try
+            {
+                var player = ReInput.players.GetPlayer(0);
+                if (player == null || player.controllers == null) return null;
+                _maps = player.controllers.maps;
+                if (_maps == null) return null;
+
+                _mouse = player.controllers.hasMouse ? (Controller)player.controllers.Mouse : null;
+                _kbFallbackMap = FirstMap(ControllerType.Keyboard);
+                _mouseFallbackMap = FirstMap(ControllerType.Mouse);
+
+                var actionsIl = ReInput.mapping.Actions;
+                if (actionsIl == null) return null;
+                var actionsColl = actionsIl.TryCast<Il2CppSystem.Collections.Generic.ICollection<InputAction>>();
+                if (actionsColl == null) return null;
+
+                var actions = new List<InputAction>();
+                int total = actionsColl.Count;
+                for (int i = 0; i < total; i++)
+                {
+                    var a = actionsIl[i];
+                    if (a != null && a.userAssignable) actions.Add(a);
+                }
+                // categoryId then id ≈ authoring order — a closer match to the vanilla
+                // Controls screen's grouping than an alphabetical action-name sort.
+                actions.Sort((a, b) => a.categoryId != b.categoryId
+                    ? a.categoryId.CompareTo(b.categoryId) : a.id.CompareTo(b.id));
+
+                var rows = new List<Row>(actions.Count);
+                foreach (var action in actions)
+                {
+                    if (action.type == InputActionType.Button)
+                    {
+                        rows.Add(new Row
+                        {
+                            ActionId = action.id,
+                            Action = FirstNonEmpty(action.descriptiveName, action.name),
+                            PoleFilter = null,
+                        });
+                    }
+                    else
+                    {
+                        // Axis action (e.g. movement): the vanilla Controls screen shows its
+                        // positive and negative directions as two separate rows.
+                        rows.Add(new Row
+                        {
+                            ActionId = action.id,
+                            Action = FirstNonEmpty(action.positiveDescriptiveName, action.descriptiveName + " +"),
+                            PoleFilter = Pole.Positive,
+                        });
+                        rows.Add(new Row
+                        {
+                            ActionId = action.id,
+                            Action = FirstNonEmpty(action.negativeDescriptiveName, action.descriptiveName + " -"),
+                            PoleFilter = Pole.Negative,
+                        });
+                    }
+                }
+                foreach (var row in rows) FillSlots(row);
+                return rows;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[POGConfig] VanillaBinds.TryRead: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static string FirstNonEmpty(string a, string b) => !string.IsNullOrEmpty(a) ? a : b;
+
+        private static ControllerMap FirstMap(ControllerType type)
+        {
+            var buf = new Il2CppSystem.Collections.Generic.List<ControllerMap>();
+            _maps.GetAllMaps(type, buf);
+            return buf.Count > 0 ? buf[0] : null;
+        }
+
+        // Re-reads the row's three slots from the live Rewired maps.
+        internal static void FillSlots(Row row)
+        {
+            foreach (var s in row.Slots) { s.Display = "—"; s.MapId = 0; s.Map = null; }
+            if (_maps == null) return;
+
+            var buf = new Il2CppSystem.Collections.Generic.List<ActionElementMap>();
+            _maps.GetElementMapsWithAction(ControllerType.Keyboard, row.ActionId, true, buf);
+            int slot = 0;
+            for (int i = 0; i < buf.Count && slot < 2; i++)
+            {
+                var em = buf[i];
+                if (em == null) continue;
+                if (row.PoleFilter.HasValue && em.axisContribution != row.PoleFilter.Value) continue;
+                row.Slots[slot].Display = em.elementIdentifierName;
+                row.Slots[slot].MapId = em.id;
+                row.Slots[slot].Map = em.controllerMap;
+                slot++;
+            }
+
+            buf = new Il2CppSystem.Collections.Generic.List<ActionElementMap>();
+            _maps.GetElementMapsWithAction(ControllerType.Mouse, row.ActionId, true, buf);
+            for (int i = 0; i < buf.Count; i++)
+            {
+                var em = buf[i];
+                if (em == null) continue;
+                if (row.PoleFilter.HasValue && em.axisContribution != row.PoleFilter.Value) continue;
+                row.Slots[2].Display = em.elementIdentifierName;
+                row.Slots[2].MapId = em.id;
+                row.Slots[2].Map = em.controllerMap;
+                break;
+            }
+        }
+
+        // Writes a bind into the given slot (0/1 = keyboard, 2 = mouse) and verifies it
+        // landed by re-reading the maps. Returns true only when the re-read confirms the
+        // key is actually bound; the row's slots are refreshed either way, so the UI
+        // always ends up showing the real state.
+        internal static bool TryWrite(Row row, int slotIdx, KeyCode kc)
+        {
+            try
+            {
+                if (_maps == null) return false;
+                Pole pole = row.PoleFilter ?? Pole.Positive;
+                var slot = row.Slots[slotIdx];
+                bool ok;
+                int mouseEid = -1;
+
+                if (slotIdx < 2)
+                {
+                    var map = slot.Map != null ? slot.Map : _kbFallbackMap;
+                    if (map == null) return false;
+                    ok = slot.MapId != 0
+                        ? map.ReplaceElementMap(slot.MapId, row.ActionId, pole, kc, ModifierKeyFlags.None)
+                        : map.CreateElementMap(row.ActionId, pole, kc, ModifierKeyFlags.None);
+                }
+                else
+                {
+                    if (kc < KeyCode.Mouse0 || kc > KeyCode.Mouse6) return false;
+                    mouseEid = MouseButtonElementId(kc - KeyCode.Mouse0);
+                    if (mouseEid < 0) return false;
+                    var map = slot.Map != null ? slot.Map : _mouseFallbackMap;
+                    if (map == null) return false;
+                    ok = slot.MapId != 0
+                        ? map.ReplaceElementMap(slot.MapId, row.ActionId, pole,
+                              mouseEid, ControllerElementType.Button, AxisRange.Full, false)
+                        : map.CreateElementMap(row.ActionId, pole,
+                              mouseEid, ControllerElementType.Button, AxisRange.Full, false);
+                }
+
+                if (ok) SaveUserData();
+                FillSlots(row);
+                if (!ok)
+                {
+                    MelonLogger.Warning($"[POGConfig] Vanilla rebind '{row.Action}' → {kc}: Rewired rejected the assignment.");
+                    return false;
+                }
+                bool verified = VerifyBound(row, slotIdx, kc, mouseEid);
+                if (!verified)
+                    MelonLogger.Warning($"[POGConfig] Vanilla rebind '{row.Action}' → {kc}: write reported OK but re-read does not show it.");
+                return verified;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[POGConfig] VanillaBinds.TryWrite: {ex.Message}");
+                try { FillSlots(row); } catch { }
+                return false;
+            }
+        }
+
+        internal static bool TryClear(Row row, int slotIdx)
+        {
+            try
+            {
+                var slot = row.Slots[slotIdx];
+                if (slot.MapId == 0 || slot.Map == null) return true;
+                bool ok = slot.Map.DeleteElementMap(slot.MapId);
+                if (ok) SaveUserData();
+                FillSlots(row);
+                if (!ok) MelonLogger.Warning($"[POGConfig] Vanilla unbind '{row.Action}': delete failed.");
+                return ok;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[POGConfig] VanillaBinds.TryClear: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static bool VerifyBound(Row row, int slotIdx, KeyCode kc, int mouseEid)
+        {
+            var buf = new Il2CppSystem.Collections.Generic.List<ActionElementMap>();
+            _maps.GetElementMapsWithAction(slotIdx < 2 ? ControllerType.Keyboard : ControllerType.Mouse,
+                                           row.ActionId, true, buf);
+            for (int i = 0; i < buf.Count; i++)
+            {
+                var em = buf[i];
+                if (em == null) continue;
+                if (row.PoleFilter.HasValue && em.axisContribution != row.PoleFilter.Value) continue;
+                if (slotIdx < 2) { if (em.keyCode == kc) return true; }
+                else { if (em.elementIdentifierId == mouseEid) return true; }
+            }
+            return false;
+        }
+
+        // Maps KeyCode.Mouse<N> button index → Rewired mouse element identifier id via the
+        // live Mouse controller (no hardcoded ids — layouts differ between Rewired versions).
+        private static int MouseButtonElementId(int buttonIndex)
+        {
+            if (_mouse == null) return -1;
+            var ids = _mouse.ButtonElementIdentifiers;
+            if (ids == null) return -1;
+            var coll = ids.TryCast<Il2CppSystem.Collections.Generic.ICollection<ControllerElementIdentifier>>();
+            if (coll == null || buttonIndex < 0 || buttonIndex >= coll.Count) return -1;
+            var cei = ids[buttonIndex];
+            return cei != null ? cei.id : -1;
+        }
+
+        // Restore the game's default keyboard + mouse maps (same effect as the vanilla
+        // Controls screen's "Restore Defaults"), then persist. Requires a prior TryRead
+        // to have populated _maps (the button only exists on the read Vanilla tab).
+        internal static bool RestoreDefaults()
+        {
+            try
+            {
+                if (_maps == null) return false;
+                _maps.LoadDefaultMaps(ControllerType.Keyboard);
+                _maps.LoadDefaultMaps(ControllerType.Mouse);
+                SaveUserData();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[POGConfig] VanillaBinds.RestoreDefaults: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static void SaveUserData()
+        {
+            try
+            {
+                var uds = ReInput.userDataStore;
+                if (uds != null) uds.Save();
+            }
+            catch (Exception ex)
+            { MelonLogger.Warning($"[POGConfig] userDataStore.Save: {ex.Message}"); }
+        }
+    }
+
     // ── Harmony patch ─────────────────────────────────────────────────────────
 
     [HarmonyPatch(typeof(NetworkMenu), "TogglePauseMenu")]
@@ -827,6 +1252,28 @@ namespace POGMods.Config
         }
     }
 
+    // ── Native menu state ───────────────────────────────────────────────────
+    // A real NetworkMenuState the game switches to via NetworkMenu.SetState when
+    // the MOD SETTINGS panel opens. Being the CurrentState means the game hides
+    // the underlying menu through its own OnExitState and treats us as a first-class
+    // screen. We only override ShowElements (the base OnEnter/OnExitState call it
+    // through the vtable to toggle visibility); everything else uses the base
+    // behaviour. We keep m_overrideCancelInput = true and drive close ourselves so
+    // there's no ambiguity about whether Esc routes to cancel or the pause toggle.
+
+    public class PogConfigState : NetworkMenuState
+    {
+        public PogConfigState(IntPtr ptr) : base(ptr) { }
+
+        public override void ShowElements(bool show)
+        {
+            // Do NOT call base: the base ShowElements walks m_hideOnState, a field that
+            // belongs to the generic NetworkMenuState<T> subclass and isn't on our type.
+            try { ConfigBehaviour.OnStateShowElements(show); }
+            catch (Exception ex) { MelonLogger.Warning($"[POGConfig] state.ShowElements: {ex.Message}"); }
+        }
+    }
+
     // ── Mod entry ─────────────────────────────────────────────────────────────
 
     public class PogConfigMelon : MelonMod
@@ -839,6 +1286,17 @@ namespace POGMods.Config
             catch (Exception ex) { MelonLogger.Warning($"[POGConfig] Harmony patch failed: {ex.Message}"); }
 
             ClassInjector.RegisterTypeInIl2Cpp<ConfigBehaviour>();
+            try
+            {
+                ClassInjector.RegisterTypeInIl2Cpp<PogConfigState>();
+                ConfigBehaviour.StateTypeRegistered = true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[POGConfig] Native state type registration failed, " +
+                                    $"using overlay fallback: {ex.Message}");
+            }
+
             var runner = new GameObject("POGConfigRunner");
             UnityEngine.Object.DontDestroyOnLoad(runner);
             runner.hideFlags = HideFlags.HideAndDontSave;
@@ -860,6 +1318,17 @@ namespace POGMods.Config
         // Frame on which the panel was last closed — lets the TogglePauseMenu patch
         // swallow the same Esc press that closed the panel (see PatchTogglePauseMenu).
         internal static int LastCloseFrame = -1;
+
+        // Native menu-state integration (Phase A). Set true once the injected
+        // PogConfigState type registers; if registration failed we fall back to the
+        // plain overlay show/hide with no state transition.
+        internal static bool StateTypeRegistered;
+        private PogConfigState  _cfgState;
+        private NetworkMenuState _prevState;   // state to return to on close
+        private bool _usingNativeState;        // true while open via SetState
+        private bool _nativeInitTried, _nativeOk;
+
+        internal static void OnStateShowElements(bool show) => _instance?.SetOverlayVisible(show);
 
         // Set by any handler that reacted to Escape this frame (cancel search edit,
         // cancel value edit, cancel key binding) so the same press doesn't ALSO
@@ -928,6 +1397,21 @@ namespace POGMods.Config
         private readonly Dictionary<int, RectTransform> _sidebarItemRects = new();
         private readonly Dictionary<int, Image> _sidebarItemBgs = new();
 
+        // ── Vanilla tab interactive state ─────────────────────────────────────
+        private class VanillaRowUI
+        {
+            public VanillaBinds.Row Data;
+            public readonly TextMeshProUGUI[] Texts = new TextMeshProUGUI[3];
+            public readonly Image[] Bgs = new Image[3];
+            public readonly GameObject[] Clears = new GameObject[3];
+        }
+        private readonly List<VanillaRowUI> _vanillaRows = new();
+        private VanillaRowUI _vListenRow;
+        private int _vListenSlot = -1;
+        private int _vListenFrame;
+        private static readonly Color VNormalBg = new Color(0.14f, 0.15f, 0.19f);
+        private static readonly Color VListenBg = new Color(0.10f, 0.20f, 0.32f);
+
         // ── Thumb drag state ─────────────────────────────────────────────────
         private bool  _scrollDragging;
         private float _scrollDragGrab;   // mouseY - thumbTopY at drag start
@@ -972,10 +1456,12 @@ namespace POGMods.Config
             try
             {
                 var nm = NetworkMenu.Instance;
-                string state = (nm != null && nm.CurrentState != null)
-                    ? nm.CurrentState.GetIl2CppType().Name : "";
+                var curState = (nm != null) ? nm.CurrentState : null;
+                string state = (curState != null) ? curState.GetIl2CppType().Name : "";
                 _isPause    = state == "NetworkMenuPauseState";
                 _isMainMenu = state == "NetworkMenuMainState";
+                bool isOurState = _usingNativeState && _cfgState != null && curState != null
+                                  && curState.Pointer == _cfgState.Pointer;
 
                 // Main menu — inject a real NetworkMenuButton into the game's Buttons Panel.
                 // Hover/selection visuals come natively from NetworkMenuButton
@@ -1005,7 +1491,9 @@ namespace POGMods.Config
                 if (_isPause && Input.GetKey(KeyCode.LeftShift) && Input.GetKeyDown(KeyCode.P))
                     DiagnosePauseMenu();
 
-                bool inMenu = _isPause || _isMainMenu;
+                // Our own state counts as "in menu"; without this the guard below would
+                // close the panel every frame while the native state is active.
+                bool inMenu = _isPause || _isMainMenu || isOurState;
                 if (!inMenu && _panelOpen) DoClose();
 
                 HandleClicks();
@@ -1022,6 +1510,7 @@ namespace POGMods.Config
                     UpdateThumbDrag();
                     HandleScroll();
                     HandleSearchInput();
+                    UpdateVanillaListen();
                     foreach (var (_, entries) in POGConfig.GetAll())
                         foreach (var e in entries)
                             e.OnUpdate();
@@ -1612,39 +2101,142 @@ namespace POGMods.Config
 
         // ── Open / Close ──────────────────────────────────────────────────────
 
+        // Lazily create the injected state on a hidden, DontDestroyOnLoad host.
+        // Returns null (and disables native mode) if anything fails.
+        private PogConfigState EnsureState()
+        {
+            if (_cfgState != null) return _cfgState;
+            if (_nativeInitTried) return _nativeOk ? _cfgState : null;
+            _nativeInitTried = true;
+            if (!StateTypeRegistered) { _nativeOk = false; return null; }
+            try
+            {
+                var host = new GameObject("POGConfigState");
+                UnityEngine.Object.DontDestroyOnLoad(host);
+                host.hideFlags = HideFlags.HideAndDontSave;
+                _cfgState = host.AddComponent<PogConfigState>();
+                _nativeOk = _cfgState != null;
+                if (_nativeOk) MelonLogger.Msg("[POGConfig] Native config state created.");
+            }
+            catch (Exception ex)
+            {
+                _nativeOk = false;
+                MelonLogger.Warning($"[POGConfig] Native state unavailable, overlay fallback: {ex.Message}");
+            }
+            return _nativeOk ? _cfgState : null;
+        }
+
         private void OpenPanel()
         {
             if (_builtRegistryVersion != POGConfig.RegistryVersion) _contentBuilt = false;
-            EnsureContent();
-            _overlay.SetActive(true);
-            _panelOpen = true;
-            PanelOpen  = true;
-            POGConfig.PanelOpen = true;
 
-            // Block keyboard / gamepad submit on the underlying menu by clearing selection.
-            var es = UnityEngine.EventSystems.EventSystem.current;
-            if (es != null)
+            var nm = NetworkMenu.Instance;
+            var st = EnsureState();
+            if (st != null && nm != null && nm.CurrentState != null
+                && nm.CurrentState.Pointer != st.Pointer)
             {
-                _savedSelected = es.currentSelectedGameObject;
-                es.SetSelectedGameObject(null);
+                try
+                {
+                    // Become a real menu state: the game hides the underlying menu via its
+                    // OnExitState, then calls our OnEnterState → ShowElements(true).
+                    _prevState = nm.CurrentState;
+                    st.m_previousState = _prevState;
+                    st.m_menu = nm;
+                    st.m_overrideCancelInput = true; // we drive close ourselves (see Update/DoClose)
+                    _usingNativeState = true;
+                    nm.SetState(st);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _usingNativeState = false;
+                    _nativeOk = false; // stop trying native this session
+                    MelonLogger.Warning($"[POGConfig] SetState open failed, overlay fallback: {ex.Message}");
+                }
             }
+
+            _usingNativeState = false;
+            SetOverlayVisible(true);
         }
 
         internal void DoClose()
         {
-            if (_overlay != null) _overlay.SetActive(false);
-            _panelOpen = false;
-            PanelOpen  = false;
-            LastCloseFrame = Time.frameCount;
-            POGConfig.PanelOpen = false;
-            KeyEntry.AnyWaiting = false;
-            _scrollDragging = false;
-            _sidebarDragging = false;
+            if (_usingNativeState)
+            {
+                var nm = NetworkMenu.Instance;
+                bool stillActive = nm != null && _cfgState != null && nm.CurrentState != null
+                                   && nm.CurrentState.Pointer == _cfgState.Pointer;
+                if (stillActive && _prevState != null)
+                {
+                    // SetState(prev) → our OnExitState → ShowElements(false) hides the overlay
+                    // and reshows the previous menu.
+                    try { nm.SetState(_prevState); }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"[POGConfig] SetState close failed: {ex.Message}");
+                        SetOverlayVisible(false);
+                    }
+                }
+                else
+                {
+                    // Already transitioned away (e.g. game cancelled) — just ensure hidden.
+                    SetOverlayVisible(false);
+                }
+                _usingNativeState = false;
+                return;
+            }
 
-            var es = UnityEngine.EventSystems.EventSystem.current;
-            if (es != null && _savedSelected != null)
-                es.SetSelectedGameObject(_savedSelected);
-            _savedSelected = null;
+            SetOverlayVisible(false);
+        }
+
+        // Single owner of overlay visibility + open/close bookkeeping. Called directly
+        // in fallback mode, or via the state's ShowElements in native mode.
+        internal void SetOverlayVisible(bool show)
+        {
+            if (show)
+            {
+                if (_builtRegistryVersion != POGConfig.RegistryVersion) _contentBuilt = false;
+                bool alreadyBuilt = _contentBuilt;
+                EnsureContent();
+                // The Vanilla tab is a live mirror of Rewired: if it was left selected,
+                // re-read on every panel open, otherwise binds changed in the game's own
+                // Controls screen while the panel was closed would show stale values.
+                // (EnsureContent already rebuilt everything when alreadyBuilt is false.)
+                if (alreadyBuilt && _selectedMod == -1) RebuildContent();
+                if (_overlay != null) _overlay.SetActive(true);
+                _panelOpen = true;
+                PanelOpen = true;
+                POGConfig.PanelOpen = true;
+
+                // Block keyboard / gamepad submit on any underlying menu by clearing selection.
+                var es = UnityEngine.EventSystems.EventSystem.current;
+                if (es != null)
+                {
+                    _savedSelected = es.currentSelectedGameObject;
+                    es.SetSelectedGameObject(null);
+                }
+            }
+            else
+            {
+                if (_overlay != null) _overlay.SetActive(false);
+                _panelOpen = false;
+                PanelOpen = false;
+                LastCloseFrame = Time.frameCount;
+                POGConfig.PanelOpen = false;
+                CancelVanillaListen(); // before AnyWaiting reset — it clears the flag itself
+                KeyEntry.AnyWaiting = false;
+                _scrollDragging = false;
+                _sidebarDragging = false;
+
+                // In native mode the previous state's OnEnterState reselects for us.
+                if (!_usingNativeState)
+                {
+                    var es = UnityEngine.EventSystems.EventSystem.current;
+                    if (es != null && _savedSelected != null)
+                        es.SetSelectedGameObject(_savedSelected);
+                }
+                _savedSelected = null;
+            }
         }
 
         // ── Build static UI ───────────────────────────────────────────────────
@@ -1924,11 +2516,15 @@ namespace POGMods.Config
             Clicks.Clear();
             if (_doneBtnRt != null) Clicks.Register(_doneBtnRt, DoClose);
 
-            // Clamp selection
+            // Clamp selection. -1 is the Vanilla Binds pseudo-entry, which always exists,
+            // so an empty mods list falls back to it instead of the old "no mods" message.
             var mods = POGConfig.GetAllRecords();
-            if (mods.Count == 0) _selectedMod = 0;
-            else if (_selectedMod >= mods.Count) _selectedMod = mods.Count - 1;
-            else if (_selectedMod < 0) _selectedMod = 0;
+            if (_selectedMod < -1) _selectedMod = -1;
+            else if (_selectedMod >= 0)
+            {
+                if (mods.Count == 0) _selectedMod = -1;
+                else if (_selectedMod >= mods.Count) _selectedMod = mods.Count - 1;
+            }
 
             RebuildSidebar();
             RebuildContent();
@@ -1948,38 +2544,16 @@ namespace POGMods.Config
             const float GAP    = 2f;
             float y = 4f;
 
+            // Vanilla is a pseudo-entry (index -1), always shown first and unaffected by
+            // search, so the read-only bind mirror is never hidden by a mod-name query.
+            AddSidebarItem(-1, "VANILLA BINDS", vanilla: true, ref y, ITEM_H, GAP);
+
             string q = (_searchQuery ?? "").Trim().ToLowerInvariant();
             for (int i = 0; i < mods.Count; i++)
             {
                 var rec = mods[i];
                 if (q.Length > 0 && !rec.Name.ToLowerInvariant().Contains(q)) continue;
-
-                int idx = i; // capture
-                var item = UI.Make("MI_" + rec.Name, _sidebarList);
-                var iRt = UI.Rt(item);
-                iRt.anchorMin = new Vector2(0, 1); iRt.anchorMax = new Vector2(1, 1);
-                iRt.pivot = new Vector2(0.5f, 1f);
-                iRt.sizeDelta = new Vector2(-4, ITEM_H);
-                iRt.anchoredPosition = new Vector2(0, -y);
-
-                bool isSel = idx == _selectedMod;
-                var bg = UI.AddImage(item,
-                    isSel ? new Color(1f, 0.82f, 0.3f, 0.18f) : new Color(0.12f, 0.12f, 0.14f, 0.7f));
-                _sidebarItemBgs[idx] = bg;
-                _sidebarItemRects[idx] = iRt;
-
-                var lblGo = UI.Make("Label", item.transform);
-                UI.Stretch(UI.Rt(lblGo), 10, 10, 0, 0);
-                var lTmp = UI.AddText(lblGo, rec.Name, _font, 13,
-                    isSel ? new Color(1f, 0.85f, 0.4f) : new Color(0.85f, 0.85f, 0.88f),
-                    TextAlignmentOptions.MidlineLeft);
-                if (isSel) lTmp.fontStyle = FontStyles.Bold;
-                lTmp.enableWordWrapping = false;
-                lTmp.overflowMode = TextOverflowModes.Ellipsis;
-
-                Clicks.Register(iRt, () => SelectMod(idx));
-
-                y += ITEM_H + GAP;
+                AddSidebarItem(i, rec.Name, vanilla: false, ref y, ITEM_H, GAP);
             }
 
             _sidebarTotalH = y + 4f;
@@ -1997,6 +2571,36 @@ namespace POGMods.Config
             if (_sidebarScrollbarGo != null) _sidebarScrollbarGo.SetActive(needsScroll);
         }
 
+        private void AddSidebarItem(int idx, string label, bool vanilla, ref float y, float itemH, float gap)
+        {
+            var item = UI.Make("MI_" + (vanilla ? "Vanilla" : label), _sidebarList);
+            var iRt = UI.Rt(item);
+            iRt.anchorMin = new Vector2(0, 1); iRt.anchorMax = new Vector2(1, 1);
+            iRt.pivot = new Vector2(0.5f, 1f);
+            iRt.sizeDelta = new Vector2(-4, itemH);
+            iRt.anchoredPosition = new Vector2(0, -y);
+
+            bool isSel = idx == _selectedMod;
+            Color selBg   = vanilla ? new Color(0.45f, 0.68f, 0.95f, 0.18f) : new Color(1f, 0.82f, 0.3f, 0.18f);
+            Color selText = vanilla ? new Color(0.65f, 0.82f, 1f) : new Color(1f, 0.85f, 0.4f);
+            var bg = UI.AddImage(item, isSel ? selBg : new Color(0.12f, 0.12f, 0.14f, 0.7f));
+            _sidebarItemBgs[idx] = bg;
+            _sidebarItemRects[idx] = iRt;
+
+            var lblGo = UI.Make("Label", item.transform);
+            UI.Stretch(UI.Rt(lblGo), 10, 10, 0, 0);
+            var lTmp = UI.AddText(lblGo, label, _font, 13,
+                isSel ? selText : new Color(0.85f, 0.85f, 0.88f), TextAlignmentOptions.MidlineLeft);
+            if (isSel) lTmp.fontStyle = FontStyles.Bold;
+            if (vanilla) lTmp.fontStyle |= FontStyles.Italic;
+            lTmp.enableWordWrapping = false;
+            lTmp.overflowMode = TextOverflowModes.Ellipsis;
+
+            Clicks.Register(iRt, () => SelectMod(idx));
+
+            y += itemH + gap;
+        }
+
         private void SelectMod(int index)
         {
             if (index == _selectedMod) return;
@@ -2005,9 +2609,28 @@ namespace POGMods.Config
             RebuildContent();
         }
 
+        private static void RestoreModDefaults(ModRecord rec)
+        {
+            foreach (var e in rec.Entries)
+            {
+                try { e.RestoreDefault(); }
+                catch (Exception ex)
+                { MelonLogger.Warning($"[POGConfig] RestoreDefault '{e.Label}': {ex.Message}"); }
+            }
+            MelonLogger.Msg($"[POGConfig] '{rec.Name}': settings restored to defaults.");
+        }
+
         private void RebuildContent()
         {
             if (_scrollContent == null) return;
+
+            // Clear any in-progress bind listening BEFORE destroying the rows it lived on.
+            // Otherwise switching tab/mod mid-listen leaves KeyEntry.AnyWaiting stuck true
+            // forever, and then NO slot (mod or vanilla) can start listening again. Mod
+            // KeyEntries self-heal on their next OnUpdate once AnyWaiting is false.
+            KeyEntry.AnyWaiting = false;
+            _vListenRow = null;
+            _vListenSlot = -1;
 
             for (int i = _scrollContent.childCount - 1; i >= 0; i--)
                 UnityEngine.Object.Destroy(_scrollContent.GetChild(i).gameObject);
@@ -2022,6 +2645,8 @@ namespace POGMods.Config
                 int idx = kv.Key;
                 Clicks.Register(kv.Value, () => SelectMod(idx));
             }
+
+            if (_selectedMod == -1) { RebuildVanillaContent(); return; }
 
             var mods = POGConfig.GetAllRecords();
             if (mods.Count == 0)
@@ -2066,6 +2691,29 @@ namespace POGMods.Config
                 y += h + 2f;
             }
 
+            // RESTORE DEFAULTS — bottom-right, resets every entry of this mod to the
+            // values it was registered with (captured before saved prefs were applied).
+            {
+                y += 10f;
+                var rdRow = UI.Make("R_RestoreDefaults", _scrollContent);
+                UI.PlaceFromTop(UI.Rt(rdRow), y, 30f);
+
+                var rdGo = UI.Make("Btn", rdRow.transform);
+                var rdRt = UI.Rt(rdGo);
+                rdRt.anchorMin = new Vector2(1f, 0.5f); rdRt.anchorMax = new Vector2(1f, 0.5f);
+                rdRt.pivot = new Vector2(1f, 0.5f);
+                rdRt.sizeDelta = new Vector2(170, 26);
+                rdRt.anchoredPosition = Vector2.zero;
+                UI.AddImage(rdGo, new Color(0.24f, 0.16f, 0.14f));
+                var rdTxtGo = UI.Make("Text", rdGo.transform);
+                UI.Stretch(UI.Rt(rdTxtGo));
+                UI.AddText(rdTxtGo, "RESTORE DEFAULTS", _font, 12,
+                           new Color(0.9f, 0.62f, 0.5f), TextAlignmentOptions.Center);
+                var recCaptured = rec;
+                Clicks.Register(rdRt, () => RestoreModDefaults(recCaptured));
+                y += 32f;
+            }
+
             _totalContentH = y + 4f;
             _scrollOffset  = 0f;
             if (_scrollContentRt != null)
@@ -2081,6 +2729,233 @@ namespace POGMods.Config
             if (needsScroll) UpdateScrollThumb(Mathf.Max(0, _totalContentH - VIEWPORT_H));
             // Cancel any in-progress drag from the previous mod's content.
             _scrollDragging = false;
+        }
+
+        // Live, editable mirror of the game's own Controls screen. Rebuilt fresh every
+        // time the tab is selected; edits are written straight into Rewired (the same
+        // storage the vanilla screen uses) and verified by re-reading.
+        private void RebuildVanillaContent()
+        {
+            _vanillaRows.Clear();
+            _vListenRow = null;
+            if (_vListenSlot >= 0) { _vListenSlot = -1; KeyEntry.AnyWaiting = false; }
+
+            if (_modTitleTmp != null) _modTitleTmp.text = "Vanilla Binds";
+            if (_modSubTmp != null)
+                _modSubTmp.text = "The game's own controls. Click a slot to rebind — changes apply to the vanilla settings directly.";
+
+            var rows = VanillaBinds.TryRead();
+            if (rows == null || rows.Count == 0)
+            {
+                var msgGo = UI.Make("R_Msg", _scrollContent);
+                UI.PlaceFromTop(UI.Rt(msgGo), 4f, 40f);
+                UI.AddText(msgGo,
+                    rows == null ? "Vanilla binds unavailable right now." : "No user-assignable binds found.",
+                    _font, 13, new Color(0.6f, 0.6f, 0.64f));
+                _totalContentH = 48f;
+            }
+            else
+            {
+                float y = 4f;
+
+                // Column headers over the three slots.
+                var hdrGo = UI.Make("R_Header", _scrollContent);
+                UI.PlaceFromTop(UI.Rt(hdrGo), y, 18f);
+                string[] heads = { "KEYBOARD", "KEYBOARD 2", "MOUSE" };
+                const float slotsStart = 0.40f, gap = 0.012f;
+                float slotW = (1f - slotsStart - gap * 2) / 3f;
+                for (int i = 0; i < 3; i++)
+                {
+                    float x0 = slotsStart + i * (slotW + gap);
+                    var hGo = UI.Make("H" + i, hdrGo.transform);
+                    var hRt = UI.Rt(hGo);
+                    hRt.anchorMin = new Vector2(x0, 0f);
+                    hRt.anchorMax = new Vector2(x0 + slotW, 1f);
+                    hRt.offsetMin = hRt.offsetMax = Vector2.zero;
+                    var hTmp = UI.AddText(hGo, heads[i], _font, 10,
+                                          new Color(0.5f, 0.55f, 0.65f), TextAlignmentOptions.Center);
+                    hTmp.fontStyle = FontStyles.Bold;
+                }
+                y += 20f;
+
+                const float ROW_H = 40f;
+                foreach (var row in rows)
+                {
+                    var rowGo = UI.Make("R_" + row.Action, _scrollContent);
+                    UI.PlaceFromTop(UI.Rt(rowGo), y, ROW_H);
+                    BuildVanillaRow(rowGo, row);
+                    y += ROW_H + 2f;
+                }
+
+                // RESTORE DEFAULTS — resets the game's keyboard+mouse maps to their
+                // defaults (same as the vanilla Controls screen's own button).
+                y += 10f;
+                var rdRow = UI.Make("R_RestoreDefaults", _scrollContent);
+                UI.PlaceFromTop(UI.Rt(rdRow), y, 30f);
+                var rdGo = UI.Make("Btn", rdRow.transform);
+                var rdRt = UI.Rt(rdGo);
+                rdRt.anchorMin = new Vector2(1f, 0.5f); rdRt.anchorMax = new Vector2(1f, 0.5f);
+                rdRt.pivot = new Vector2(1f, 0.5f);
+                rdRt.sizeDelta = new Vector2(170, 26);
+                rdRt.anchoredPosition = Vector2.zero;
+                UI.AddImage(rdGo, new Color(0.14f, 0.18f, 0.24f));
+                var rdTxtGo = UI.Make("Text", rdGo.transform);
+                UI.Stretch(UI.Rt(rdTxtGo));
+                UI.AddText(rdTxtGo, "RESTORE DEFAULTS", _font, 12,
+                           new Color(0.6f, 0.78f, 1f), TextAlignmentOptions.Center);
+                Clicks.Register(rdRt, RestoreVanillaDefaults);
+                y += 32f;
+
+                _totalContentH = y + 4f;
+            }
+
+            _scrollOffset = 0f;
+            if (_scrollContentRt != null)
+            {
+                _scrollContentRt.sizeDelta = new Vector2(0, _totalContentH);
+                _scrollContentRt.anchoredPosition = Vector2.zero;
+            }
+            bool needsScroll = _totalContentH > VIEWPORT_H;
+            if (_scrollbarGo != null) _scrollbarGo.SetActive(needsScroll);
+            if (needsScroll) UpdateScrollThumb(Mathf.Max(0, _totalContentH - VIEWPORT_H));
+            _scrollDragging = false;
+        }
+
+        private void BuildVanillaRow(GameObject row, VanillaBinds.Row data)
+        {
+            var ui = new VanillaRowUI { Data = data };
+
+            var lbl = UI.Make("Label", row.transform);
+            UI.Rt(lbl).anchorMin = Vector2.zero;
+            UI.Rt(lbl).anchorMax = new Vector2(0.40f, 1f);
+            UI.Rt(lbl).offsetMin = UI.Rt(lbl).offsetMax = Vector2.zero;
+            var lTmp = UI.AddText(lbl, data.Action, _font, 14, new Color(0.82f, 0.86f, 0.92f));
+            lTmp.enableWordWrapping = false;
+            lTmp.overflowMode = TextOverflowModes.Ellipsis;
+
+            // Same 3-column grid as KeyEntry; blue tint marks these as vanilla rows.
+            const float slotsStart = 0.40f, gap = 0.012f;
+            float slotW = (1f - slotsStart - gap * 2) / 3f;
+            for (int i = 0; i < 3; i++)
+            {
+                int slotIdx = i; // capture
+                float x0 = slotsStart + i * (slotW + gap);
+                float x1 = x0 + slotW;
+                var slotGo = UI.Make("Slot" + i, row.transform);
+                var slotRt = UI.Rt(slotGo);
+                slotRt.anchorMin = new Vector2(x0, 0.14f);
+                slotRt.anchorMax = new Vector2(x1, 0.86f);
+                slotRt.offsetMin = slotRt.offsetMax = Vector2.zero;
+                ui.Bgs[i] = UI.AddImage(slotGo, VNormalBg);
+
+                // Bind area = slot minus the 14px clear-"x" column (non-overlapping rects,
+                // same pattern as KeyEntry).
+                var bindGo = UI.Make("Bind", slotGo.transform);
+                var bindRt = UI.Rt(bindGo);
+                UI.Stretch(bindRt, 0, 14, 0, 0);
+                Clicks.Register(bindRt, () => StartVanillaListen(ui, slotIdx));
+
+                var txtGo = UI.Make("Text", slotGo.transform);
+                UI.Stretch(UI.Rt(txtGo), 4, 16, 0, 0);
+                var txt = UI.AddText(txtGo, data.Slots[i].Display, _font, 12,
+                                     new Color(0.6f, 0.78f, 1f), TextAlignmentOptions.MidlineLeft);
+                txt.enableWordWrapping = false;
+                txt.overflowMode = TextOverflowModes.Ellipsis;
+                ui.Texts[i] = txt;
+
+                var clearGo = UI.Make("Clear", slotGo.transform);
+                var clearRt = UI.Rt(clearGo);
+                clearRt.anchorMin = clearRt.anchorMax = new Vector2(1f, 1f);
+                clearRt.pivot = new Vector2(1f, 1f);
+                clearRt.sizeDelta = new Vector2(14, 16);
+                clearRt.anchoredPosition = Vector2.zero;
+                UI.AddText(clearGo, "x", _font, 11, new Color(0.85f, 0.5f, 0.5f), TextAlignmentOptions.Center);
+                Clicks.Register(clearRt, () => VanillaClear(ui, slotIdx));
+                ui.Clears[i] = clearGo;
+                clearGo.SetActive(data.Slots[i].MapId != 0);
+            }
+
+            _vanillaRows.Add(ui);
+        }
+
+        private void StartVanillaListen(VanillaRowUI ui, int slotIdx)
+        {
+            if (_vListenSlot >= 0 || KeyEntry.AnyWaiting) return;
+            _vListenRow = ui;
+            _vListenSlot = slotIdx;
+            _vListenFrame = Time.frameCount;
+            KeyEntry.AnyWaiting = true; // blocks Esc-close and mod KeyEntry listening
+            if (ui.Texts[slotIdx] != null) ui.Texts[slotIdx].text = "…";
+            if (ui.Bgs[slotIdx] != null) ui.Bgs[slotIdx].color = VListenBg;
+        }
+
+        private void CancelVanillaListen()
+        {
+            if (_vListenSlot < 0) return;
+            var row = _vListenRow;
+            _vListenRow = null;
+            _vListenSlot = -1;
+            KeyEntry.AnyWaiting = false;
+            if (row != null) RefreshVanillaRowUI(row);
+        }
+
+        // Per-frame while the panel is open: drives vanilla slot listening. Keyboard
+        // columns only accept keys, the mouse column only accepts mouse buttons — the
+        // typed 2+1 structure IS how Rewired stores these, so the UI can't request an
+        // assignment the vanilla screen couldn't represent.
+        private void UpdateVanillaListen()
+        {
+            if (_vListenSlot < 0 || _vListenRow == null) return;
+
+            if (Input.GetKeyDown(KeyCode.Escape))
+            { EscConsumed = true; CancelVanillaListen(); return; }
+
+            // Swallow the click that started listening (it would bind Mouse0 instantly).
+            if (Time.frameCount == _vListenFrame) return;
+
+            var row = _vListenRow;
+            int slotIdx = _vListenSlot;
+            foreach (KeyCode kc in Enum.GetValues(typeof(KeyCode)))
+            {
+                if (kc == KeyCode.None || kc == KeyCode.Escape) continue;
+                bool isMouse = kc >= KeyCode.Mouse0 && kc <= KeyCode.Mouse6;
+                if (slotIdx < 2 ? isMouse : !isMouse) continue;
+                if (!Input.GetKeyDown(kc)) continue;
+
+                bool verified = VanillaBinds.TryWrite(row.Data, slotIdx, kc);
+                _vListenRow = null;
+                _vListenSlot = -1;
+                KeyEntry.AnyWaiting = false;
+                RefreshVanillaRowUI(row);
+                if (!verified)
+                    MelonLogger.Warning($"[POGConfig] Vanilla rebind '{row.Data.Action}' → {kc} not confirmed; showing actual state.");
+                return;
+            }
+        }
+
+        private void VanillaClear(VanillaRowUI ui, int slotIdx)
+        {
+            if (_vListenSlot >= 0) CancelVanillaListen();
+            VanillaBinds.TryClear(ui.Data, slotIdx);
+            RefreshVanillaRowUI(ui);
+        }
+
+        private void RestoreVanillaDefaults()
+        {
+            if (_vListenSlot >= 0) CancelVanillaListen();
+            if (VanillaBinds.RestoreDefaults())
+                RebuildContent(); // re-read all rows so the UI reflects the reset binds
+        }
+
+        private static void RefreshVanillaRowUI(VanillaRowUI ui)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                var s = ui.Data.Slots[i];
+                if (ui.Texts[i] != null) ui.Texts[i].text = s.Display;
+                if (ui.Bgs[i] != null) ui.Bgs[i].color = VNormalBg;
+                if (ui.Clears[i] != null) ui.Clears[i].SetActive(s.MapId != 0);
+            }
         }
     }
 }

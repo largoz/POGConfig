@@ -3,6 +3,24 @@
 Історія вже випущених версій — у
 [`../../ThunderstorePackages/POGConfig/CHANGELOG.md`](../../ThunderstorePackages/POGConfig/CHANGELOG.md).
 
+## Готово (1.0.9) — підтверджено в грі
+
+- [x] **Нативний стан вікна**: панель — справжній інжектований
+      `NetworkMenuState` (`SetState`); нижнє меню ховається грою, Esc/Back
+      поводяться нативно. Фолбек на оверлей, якщо реєстрація типу не вдалась.
+- [x] **Бінди v2**: `KeyEntry` до 3 універсальних слотів (клавіатура+миша,
+      `AllowMouseButtons=true` за замовчанням), слоти справа у 3-колонковій
+      сітці, inline "x" на слот. Старі однослотні конструктори без змін.
+      Persistence: слот 0 = `prefKey`, далі `prefKey_2/_3`.
+- [x] **VANILLA BINDS (editable)**: жива дзеркальна вкладка Rewired; редагування
+      пише прямо у ванільний input (`Replace/Create/DeleteElementMap` +
+      `userDataStore.Save`) з перевіркою re-read'ом; перечитування при кожному
+      відкритті панелі. KEYBOARD-колонки — клавіші, MOUSE — миша.
+- [x] **RESTORE DEFAULTS**: на кожній сторінці мода (значення з реєстрації) і
+      на вкладці Vanilla (`LoadDefaultMaps` для клавіатури+миші).
+- [x] Фікс блокера: залипання `KeyEntry.AnyWaiting` при перемиканні вкладок
+      під час прослуховування (скидання в `RebuildContent`).
+
 ## Готово (1.0.8)
 
 - [x] Рідний hover/селектор на MODS-кнопці головного меню: клон створюється
@@ -26,30 +44,24 @@
 - [x] Блокування інпуту на меню під панеллю, поки конфіг відкритий; `Esc` закриває панель.
 - [x] Повний Developer Wiki (`Wiki/`).
 
-## Заплановано (велика переробка вікна — обговорено 2026-07-15)
+## Велика переробка вікна (обговорено 2026-07-15)
 
-**Фаза A — нативний стан вікна.** Панель має стати справжнім станом меню:
-гра повинна знати, що ми «в конфігу», а не «в меню». Кандидат: власний
-`NetworkMenuState` через ClassInjector (успадкування + override
-`OnEnterState`/`OnExitState`) і `NetworkMenu.SetState()`; фолбек — патчі
-cancel-input'а. Тоді Esc/Back поводяться як у ванільних екранах безкоштовно.
+Фази A, B, C — **зроблено й підтверджено в грі (1.0.9)**, деталі вище в
+розділі «Готово (1.0.9)». Технічні нотатки на майбутнє:
 
-**Фаза B — система біндів v2.**
-- До **трьох універсальних слотів** на дію (клавіатура і миша в одному типі
-  слоту; `KeyCode.Mouse0–6` вже покриває мишу). Persistence: `prefKey`
-  (слот 1, сумісний зі старими збереженнями), `prefKey_2`, `prefKey_3`.
-- Старі конструктори `KeyEntry` лишаються (бінарна сумісність — див. нижче).
+- Нативний стан: `PogConfigState : NetworkMenuState` через `ClassInjector`, один
+  override `ShowElements(bool)` (базові `OnEnterState`/`OnExitState` керують
+  `m_isActive` і кличуть його через vtable). `m_overrideCancelInput=true`,
+  закриття через `SetState(previous)`. `SetOverlayVisible` — єдина точка показу/
+  приховування в обох режимах (нативному й фолбек-оверлеї).
+- Rewired-колекції — Il2Cpp-проксі, що НЕ реалізують BCL `IEnumerable` і не
+  foreach-абельні. Читати через конкретний `Il2CppSystem…List<T>` (fill-overloads
+  типу `GetElementMapsWithAction(...List)`) + `TryCast<ICollection<T>>` для `Count`.
+- Запис ванільних біндів: `ControllerMap.Replace/Create/DeleteElementMap` +
+  `ReInput.userDataStore.Save()`, з перевіркою re-read'ом. Кнопки миші мапляться
+  через живий `Mouse.ButtonElementIdentifiers` (без захардкоджених id).
 
-**Фаза C — вкладка Vanilla.** Ванільні бінди читаються з Rewired:
-гра використовує стандартний **Rewired ControlMapper**
-(`NetworkMenuSettingsState.m_keyboardMapper`/`m_controllerMapper`), бінди
-зберігаються через `UserDataStore_PlayerPrefs`. Отже читання — безпечне
-(`ReInput.players.GetPlayer(0)` → controller maps → ActionElementMaps).
-v1 — read-only вкладка; редагування можливе через той самий Rewired API +
-`userDataStore.Save()` (ControlMapper data-driven і підхопить зміни), але
-вмикати лише після runtime-тесту.
-
-**Фаза D — детектор конфліктів біндів.** Індекс key→(мод, дія, слот) по всіх
+**Фаза D — детектор конфліктів біндів. Заплановано (наступне).** Індекс key→(мод, дія, слот) по всіх
 KeyEntry + ванільних ActionElementMaps. На рядку з конфліктом — попереджувальний
 значок; клік відкриває міні-попап зі списком «хто ще сидить на цій клавіші»
 з можливістю перебіндити прямо там; Esc з попапа повертає в основне вікно

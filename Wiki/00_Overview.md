@@ -7,14 +7,25 @@ Instead of building your own menu UI, you define entries and callbacks, and `POG
 
 ## What it gives you
 
-- A shared settings panel for multiple mods.
+- A shared settings panel for multiple mods, opened from a **MODS** button injected
+  natively into both the main menu and the in-game pause menu.
 - Standardized setting entry types:
   - toggle
   - slider
   - options slider
-  - keybind
+  - keybind (up to 3 universal keyboard/mouse slots)
 - Built-in runtime update flow for entry values.
 - Optional persistence through `MelonPreferences` via `prefKey`.
+- A **RESTORE DEFAULTS** button on every mod page (resets that mod to its registered
+  defaults — no wiring needed).
+- A **VANILLA BINDS** tab: a live, editable mirror of the game's own Controls screen,
+  backed directly by Rewired.
+
+## Native window (since 1.0.9)
+
+The panel is a real injected `NetworkMenuState`, so the game treats it as a first-class
+screen: it hides the underlying menu itself, and Esc/Back behave like a native screen
+transition. It falls back to a plain overlay if the injected state cannot be registered.
 
 ## Core concept
 

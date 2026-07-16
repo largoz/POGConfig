@@ -61,5 +61,9 @@
       <HintPath>..\..\MelonLoader\net6\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Il2CppRewired_Core">
+      <HintPath>..\..\MelonLoader\Il2CppAssemblies\Il2CppRewired_Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 </Project>

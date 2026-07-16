@@ -101,8 +101,26 @@ POGConfig.Register("My Mod", new List<ConfigEntry>
 }, new ModInfo("1.0.0", "Config for runtime controls", "You"));
 ```
 
+## Restore Defaults (automatic)
+
+Every mod page shows a **RESTORE DEFAULTS** button. When the panel first registers your
+entries, POGConfig captures each entry's current value as its "default" (before any saved
+preference is loaded), and the button re-applies and persists those values. This is
+built in for all entry types — you do not implement or register anything.
+
+Implication: the value your fields hold at `Register` time **is** the default. Set your
+fields to their intended defaults before registering.
+
+## Vanilla Binds tab
+
+A **VANILLA BINDS** entry sits at the top of the sidebar. It is a live, editable mirror of
+the game's own Controls screen (read from / written to Rewired directly). It is provided by
+POGConfig itself — mods do not register it and cannot add rows to it.
+
 ## Notes for stability
 
 - Keep `modName` stable across releases.
 - Keep `prefKey` stable for persisted entries.
 - Add new entries freely; old ones remain compatible if keys are unchanged.
+- `KeyEntry` gained a multi-slot constructor in 1.0.9; the old single-slot constructors
+  are unchanged and remain source/binary compatible. See `07_Entry_Key.md`.
