@@ -8,6 +8,8 @@ POGConfig provides a shared **MOD SETTINGS** panel that any mod can register ent
 
 **Source & Wiki:** [github.com/LargoScript/POGConfig](https://github.com/LargoScript/POGConfig) — full developer Wiki at [`/Wiki`](https://github.com/LargoScript/POGConfig/tree/main/Wiki).
 
+**Thunderstore:** [package page](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/) · [Thunderstore Wiki](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/wiki).
+
 ---
 
 ## Features

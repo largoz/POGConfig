@@ -10,6 +10,8 @@ In-game configuration UI framework for **Pit of Goblin** mods (MelonLoader, IL2C
 
 **Repo:** [github.com/LargoScript/POGConfig](https://github.com/LargoScript/POGConfig) · **Wiki:** [`Wiki/`](Wiki/) ([on GitHub](https://github.com/LargoScript/POGConfig/tree/main/Wiki))
 
+**Thunderstore:** [package page](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/) · [Thunderstore Wiki](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/wiki)
+
 ---
 
 ## Installation (for players)
