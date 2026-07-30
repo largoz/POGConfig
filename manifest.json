@@ -1,6 +1,6 @@
 {
   "name": "POG_Config",
-  "version_number": "1.0.9",
+  "version_number": "1.0.10",
   "website_url": "https://github.com/LargoScript/POGConfig",
   "description": "In-game MOD SETTINGS panel for Pit of Goblin mods. Provides toggles, sliders with numeric input, options lists, and keybind entries. Dependency for other POG mods.",
   "dependencies": [
