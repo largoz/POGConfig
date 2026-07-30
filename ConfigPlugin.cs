@@ -1278,7 +1278,7 @@ namespace POGMods.Config
 
     public class PogConfigMelon : MelonMod
     {
-        public const string VERSION = "1.0.9";
+        public const string VERSION = "1.0.10";
 
         public override void OnInitializeMelon()
         {
@@ -1467,11 +1467,17 @@ namespace POGMods.Config
                 // Hover/selection visuals come natively from NetworkMenuButton
                 // (OnPointerEnter → SelectButton → m_menu.SetSelected → OnSelect).
                 if (_isMainMenu && !_panelOpen)
+                {
                     EnsureMainMenuModsBtn();
+                    EnforceModsLabel(_mainMenuModsBtn);
+                }
 
                 // Pause menu — same native injection as the main menu.
                 if (_isPause && !_panelOpen)
+                {
                     EnsurePauseModsBtn();
+                    EnforceModsLabel(_pauseModsBtn);
+                }
 
                 // Floating MODS button — pause-menu FALLBACK, only if native injection
                 // didn't take (template button not found this frame).
@@ -1895,12 +1901,24 @@ namespace POGMods.Config
         // game's real button column, so the layout spaces it correctly and there
         // are no hard-coded overlay coordinates to collide with.
 
+        // Belt and braces on top of stripping the Localize components: if ANY relocalization path
+        // we did not anticipate rewrites the label, put it back. Cheap (one string compare per frame,
+        // only while the respective menu is on screen).
+        private static void EnforceModsLabel(GameObject buttonGo)
+        {
+            if (buttonGo == null) return;
+            var nmb = buttonGo.GetComponent<NetworkMenuButton>();
+            var text = nmb != null ? nmb.m_buttonText : null;
+            if (text != null && text.text != "MODS") text.text = "MODS";
+        }
+
         private void EnsureMainMenuModsBtn()
         {
             // Unity's overloaded == treats destroyed objects as null — covers scene reloads.
             if (_mainMenuModsBtn != null) return;
 
-            var template = FindButtonByLabel("START");
+            // Handler names first (language-independent); label text as a fallback.
+            var template = FindButtonByHandler("OnStartButton") ?? FindButtonByLabel("START");
             if (template == null) return; // menu not fully built yet, retry next frame
 
             _mainMenuModsBtn = InjectModsClone(template, "POGModsButton", 1); // after START
@@ -1915,7 +1933,8 @@ namespace POGMods.Config
             // Prefer a button that's clearly in the main pause column (not DISCONNECT,
             // which may live in a separate footer container). Main-menu buttons are
             // inactive during pause, so "SETTINGS" resolves to the pause one here.
-            var template = FindButtonByLabel("SETTINGS", "INVITE", "RESUME", "SHOW LOBBY CODE");
+            var template = FindButtonByHandler("OnSettingsButton", "OnInviteButton", "OnResumeButton")
+                           ?? FindButtonByLabel("SETTINGS", "INVITE", "RESUME", "SHOW LOBBY CODE");
             if (template == null) return; // pause column not ready → floating fallback shows
 
             // Sibling index 0 = top of the column, above SHOW LOBBY CODE/INVITE.
@@ -1943,6 +1962,12 @@ namespace POGMods.Config
                 var clone = UnityEngine.Object.Instantiate(
                     template.gameObject, template.transform.parent, false);
                 clone.name = cloneName;
+
+                // The donor carries I2 Localize component(s) that re-apply the DONOR's term on every
+                // language change — overwriting our "MODS" label with a second localized START/
+                // SETTINGS. Our label is not a game term, so strip them from the clone entirely.
+                foreach (var loc in clone.GetComponentsInChildren<Il2CppI2.Loc.Localize>(true))
+                    if (loc != null) UnityEngine.Object.Destroy(loc);
 
                 var nmb = clone.GetComponent<NetworkMenuButton>();
                 if (nmb == null) { UnityEngine.Object.Destroy(clone); return null; }
@@ -2010,12 +2035,43 @@ namespace POGMods.Config
             {
                 if (b == null) continue;
                 if (!b.gameObject.activeInHierarchy) continue;
+                if (b.gameObject.name.StartsWith("POGModsButton")) continue; // never match our own clone
                 var tmp = b.m_buttonText;
                 if (tmp == null) continue;
                 string t = tmp.text;
                 if (string.IsNullOrEmpty(t)) continue;
                 foreach (var lbl in labels)
                     if (t.Equals(lbl, StringComparison.OrdinalIgnoreCase)) return b;
+            }
+            return null;
+        }
+
+        // Language-independent template lookup. Labels change with the game language ("START"
+        // becomes its translation), which silently broke re-injection after a language switch —
+        // the MODS button vanished and never came back. The persistent onClick handler names
+        // (OnStartButton, OnSettingsButton, …) are serialized prefab data and never localized.
+        private static NetworkMenuButton FindButtonByHandler(params string[] methodNames)
+        {
+            var all = Resources.FindObjectsOfTypeAll<NetworkMenuButton>();
+            foreach (var b in all)
+            {
+                if (b == null || !b.gameObject.activeInHierarchy) continue;
+                // Our clones carry the donor's (disabled) persistent entries with the same method
+                // names — skip them or the clone becomes its own template.
+                if (b.gameObject.name.StartsWith("POGModsButton")) continue;
+                var btn = b.m_button;
+                if (btn == null) continue;
+
+                int count;
+                try { count = btn.onClick.GetPersistentEventCount(); } catch { continue; }
+                for (int i = 0; i < count; i++)
+                {
+                    string m;
+                    try { m = btn.onClick.GetPersistentMethodName(i); } catch { continue; }
+                    if (string.IsNullOrEmpty(m)) continue;
+                    foreach (var want in methodNames)
+                        if (m.Equals(want, StringComparison.OrdinalIgnoreCase)) return b;
+                }
             }
             return null;
         }

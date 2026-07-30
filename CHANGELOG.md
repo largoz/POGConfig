@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.10
+
+**Fixed: the MODS button disappeared after changing the game language.** Two
+causes, both in how the button was injected:
+
+- The template button was located by its **label text** (`START`, `SETTINGS`).
+  Those labels are localized, so after a language switch the template could no
+  longer be found and the button was never re-injected — which is why it stayed
+  gone instead of coming back. Templates are now matched on their persistent
+  `onClick` handler names (`OnStartButton`, `OnSettingsButton`, `OnInviteButton`),
+  which are serialized prefab data and never localized. Label matching remains as
+  a fallback.
+- The cloned button inherited the donor's I2 `Localize` component, which
+  re-applies the **donor's** term on every language change — overwriting the
+  "MODS" label with a second translated "START"/"SETTINGS". Those components are
+  now stripped from the clone, and the label is re-asserted defensively while the
+  menu is on screen.
+
+Template lookup also now skips POGConfig's own clones, so a clone can never be
+picked as the template for itself.
+
 ## 1.0.9
 
 **Native config window.** The MOD SETTINGS panel is now a real injected
