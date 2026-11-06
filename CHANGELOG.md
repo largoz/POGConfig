@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.11
+
+**Fixed: the MOD SETTINGS panel would not open after the Pit of Goblin v1.0 update.**
+The update removed `NetworkMenuState.m_overrideCancelInput`; setting it threw a
+`MissingMethodException` on every MODS-button click, so the panel never appeared. The panel
+no longer touches that field. Cancel/Esc while the panel is the active native state is now
+handled by overriding `PogConfigState.OnCancelButton` to drive our own close, so the panel
+behaves like a native menu without depending on internal fields that older game versions had.
+Thanks to GlitchApotamus for the `OnCancelButton` approach.
+
 ## 1.0.10
 
 **Fixed: the MODS button disappeared after changing the game language.** Two

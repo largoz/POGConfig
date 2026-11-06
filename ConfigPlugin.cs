@@ -1256,10 +1256,8 @@ namespace POGMods.Config
     // A real NetworkMenuState the game switches to via NetworkMenu.SetState when
     // the MOD SETTINGS panel opens. Being the CurrentState means the game hides
     // the underlying menu through its own OnExitState and treats us as a first-class
-    // screen. We only override ShowElements (the base OnEnter/OnExitState call it
-    // through the vtable to toggle visibility); everything else uses the base
-    // behaviour. We keep m_overrideCancelInput = true and drive close ourselves so
-    // there's no ambiguity about whether Esc routes to cancel or the pause toggle.
+    // screen. We override ShowElements and OnCancelButton so this panel behaves like
+    // a native menu without depending on removed internal fields from older versions.
 
     public class PogConfigState : NetworkMenuState
     {
@@ -1272,13 +1270,19 @@ namespace POGMods.Config
             try { ConfigBehaviour.OnStateShowElements(show); }
             catch (Exception ex) { MelonLogger.Warning($"[POGConfig] state.ShowElements: {ex.Message}"); }
         }
+
+        public override void OnCancelButton()
+        {
+            try { ConfigBehaviour.RequestClose(); }
+            catch (Exception ex) { MelonLogger.Warning($"[POGConfig] state.OnCancelButton: {ex.Message}"); }
+        }
     }
 
     // ── Mod entry ─────────────────────────────────────────────────────────────
 
     public class PogConfigMelon : MelonMod
     {
-        public const string VERSION = "1.0.10";
+        public const string VERSION = "1.0.11";
 
         public override void OnInitializeMelon()
         {
@@ -2198,7 +2202,6 @@ namespace POGMods.Config
                     _prevState = nm.CurrentState;
                     st.m_previousState = _prevState;
                     st.m_menu = nm;
-                    st.m_overrideCancelInput = true; // we drive close ourselves (see Update/DoClose)
                     _usingNativeState = true;
                     nm.SetState(st);
                     return;
