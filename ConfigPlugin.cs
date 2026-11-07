@@ -1005,7 +1005,8 @@ namespace POGMods.Config
     internal static class ModsLabel
     {
         // Keys are the language names in this game's only I2 source (measured 2026-07-30: 11
-        // languages). A language not listed here, or a failed lookup, shows the English label.
+        // languages). A language not listed here, for example one the game adds later, or a
+        // failed lookup, shows the English label.
         private static readonly Dictionary<string, string> ByLanguage = new Dictionary<string, string>
         {
             ["English"] = "MODS",
@@ -1020,29 +1021,76 @@ namespace POGMods.Config
             ["Swedish"] = "MODDAR",
             ["Goblin"] = "GOBBO HACKS", // in the spirit of "Gobbo Tweak Box" (Settings) and "Scarper" (Quit)
         };
-        private const string Fallback = "MODS";
-        private const float RecheckSeconds = 0.5f; // read every frame while a menu is open; the lookup is throttled
+        private const string English = "MODS";
+        // Only used if the I2 event cannot be subscribed: then the language is re-read this often.
+        private const float PollSeconds = 0.5f;
 
         private static string _language;
-        private static string _text = Fallback;
-        private static float _nextCheck;
+        private static string _text = English;
+        private static float _nextPoll;
+        private static bool _read;
+
+        // I2 fires OnLocalizeEvent at the end of the pass that re-translates every Localize
+        // component, i.e. in the same frame the game's own buttons get their new text. Kept in a
+        // field so the delegate handed to IL2CPP is not collected.
+        private static Il2CppI2.Loc.LocalizationManager.OnLocalizeCallback _callback;
+        private static bool _subscribeFailed;
+
+        /// <summary>Called right after the label text changed, to put it on the buttons at once.</summary>
+        public static Action Changed;
 
         public static string Current
         {
             get
             {
-                if (Time.unscaledTime < _nextCheck) return _text;
-                _nextCheck = Time.unscaledTime + RecheckSeconds;
-                string lang = null;
-                try { lang = Il2CppI2.Loc.LocalizationManager.CurrentLanguage; } catch { }
-                if (lang != _language)
+                if (!_read || (_callback == null && Time.unscaledTime >= _nextPoll))
                 {
-                    _language = lang;
-                    _text = lang != null && ByLanguage.TryGetValue(lang, out var t) ? t : Fallback;
-                    MelonLogger.Msg($"[POGConfig] MODS button label for '{lang ?? "?"}': {_text}");
+                    _nextPoll = Time.unscaledTime + PollSeconds;
+                    Reread();
                 }
                 return _text;
             }
+        }
+
+        public static void EnsureSubscribed()
+        {
+            if (_callback != null || _subscribeFailed) return;
+            try
+            {
+                _callback = (Il2CppI2.Loc.LocalizationManager.OnLocalizeCallback)new Action(OnLocalized);
+                Il2CppI2.Loc.LocalizationManager.add_OnLocalizeEvent(_callback);
+                Reread();
+            }
+            catch (Exception ex)
+            {
+                _callback = null;
+                _subscribeFailed = true;
+                MelonLogger.Warning($"[POGConfig] Could not follow language changes through I2 ({ex.Message}); checking every {PollSeconds}s instead.");
+            }
+        }
+
+        private static void OnLocalized()
+        {
+            try
+            {
+                if (Reread()) Changed?.Invoke();
+            }
+            catch (Exception ex) { MelonLogger.Warning($"[POGConfig] MODS label update: {ex.Message}"); }
+        }
+
+        /// <summary>Reads the current language. True if the label text changed.</summary>
+        private static bool Reread()
+        {
+            _read = true;
+            string lang = null;
+            try { lang = Il2CppI2.Loc.LocalizationManager.CurrentLanguage; } catch { }
+            if (lang == _language) return false;
+            _language = lang;
+            string text = lang != null && ByLanguage.TryGetValue(lang, out var t) ? t : English;
+            MelonLogger.Msg($"[POGConfig] MODS button label for '{lang ?? "?"}': {text}");
+            if (text == _text) return false;
+            _text = text;
+            return true;
         }
     }
 
@@ -2176,6 +2224,21 @@ namespace POGMods.Config
         // Belt and braces on top of stripping the Localize components: if ANY relocalization path
         // we did not anticipate rewrites the label, put it back. Cheap (one string compare per frame,
         // only while the respective menu is on screen).
+        // Puts the label on our buttons in the same frame the game relabels its own (I2's
+        // OnLocalizeEvent), instead of waiting for the next per-frame check below.
+        private void FollowLanguage()
+        {
+            ModsLabel.Changed = ApplyModsLabel;
+            ModsLabel.EnsureSubscribed();
+        }
+
+        private void ApplyModsLabel()
+        {
+            EnforceModsLabel(_mainMenuModsBtn);
+            EnforceModsLabel(_pauseModsBtn);
+            if (_modsBtnText != null) _modsBtnText.text = ModsLabel.Current;
+        }
+
         private static void EnforceModsLabel(GameObject buttonGo)
         {
             if (buttonGo == null) return;
@@ -2197,7 +2260,10 @@ namespace POGMods.Config
 
             _mainMenuModsBtn = InjectModsClone(template, "POGModsButton", 1); // after START
             if (_mainMenuModsBtn != null)
+            {
                 MelonLogger.Msg("[POGConfig] MODS button injected into main menu.");
+                FollowLanguage();
+            }
         }
 
         private void EnsurePauseModsBtn()
@@ -2215,6 +2281,7 @@ namespace POGMods.Config
             _pauseModsBtn = InjectModsClone(template, "POGModsButtonPause", 0);
             if (_pauseModsBtn != null)
             {
+                FollowLanguage();
                 string parent = template.transform.parent != null ? template.transform.parent.name : "?";
                 MelonLogger.Msg($"[POGConfig] MODS button injected into pause menu (parent='{parent}').");
             }

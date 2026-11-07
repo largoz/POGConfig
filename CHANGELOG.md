@@ -7,8 +7,9 @@
 - **The MODS button speaks the game's language.** The button in the main and pause menus now
   follows the language picked in the game's settings: МОДИ in Ukrainian, МОДЫ in Russian,
   模组 in Simplified Chinese, MOD in Italian and Japanese, MODDAR in Swedish, and GOBBO HACKS
-  in Goblin. English, French, German and Spanish keep MODS. It switches as soon as the
-  language changes.
+  in Goblin. English, French, German and Spanish keep MODS. A language the game adds later
+  shows the English label until it gets its own. The label changes in the same frame as the
+  game's own buttons.
 
 ## 1.0.12
 
