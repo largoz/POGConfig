@@ -27,6 +27,9 @@ namespace POGMods.Config
 
     internal static class UI
     {
+        // Square slider handle edge. Its travel is inset by half of it on each side.
+        internal const float SliderHandleSize = 14f;
+
         private static Sprite _white;
         internal static Sprite White
         {
@@ -446,11 +449,14 @@ namespace POGMods.Config
             _fillRt = UI.Rt(fill);
             fillArea.SetActive(_showFill);
 
+            // The handle travels between half-handle insets, so at min/max it stays on the
+            // track instead of hanging half off the end, where the list's mask clipped it.
             var handleArea = UI.Make("HandleArea", sGo.transform);
-            UI.Stretch(UI.Rt(handleArea));
+            float half = UI.SliderHandleSize * 0.5f;
+            UI.Stretch(UI.Rt(handleArea), half, half, 0, 0);
             var handle = UI.Make("Handle", handleArea.transform);
             UI.Rt(handle).anchorMin = UI.Rt(handle).anchorMax = new Vector2(0f, 0.5f);
-            UI.Rt(handle).sizeDelta = new Vector2(14, 14);
+            UI.Rt(handle).sizeDelta = new Vector2(UI.SliderHandleSize, UI.SliderHandleSize);
             var hImg = UI.AddImage(handle, new Color(1f, 0.82f, 0.3f));
 
             _slider.fillRect = null;
@@ -476,9 +482,9 @@ namespace POGMods.Config
             float scale = canvas != null && canvas.rootCanvas != null ? canvas.rootCanvas.scaleFactor : 1f;
             if (scale <= 0f) scale = 1f;
             float size = Mathf.Max(3f, Mathf.Round(StepDotUnits * scale)) / scale;
-            // Inset the row of dots so the end dots sit inside the track instead of being
-            // centred on its edges (half of them used to hang off the track).
-            float inset = size * 0.5f + 2f;
+            // Same inset as the handle's travel: each dot sits exactly where the handle stops
+            // for that step, and the end dots stay inside the track.
+            float inset = UI.SliderHandleSize * 0.5f;
 
             var pointsGo = UI.Make("StepPoints", sliderTransform);
             var pointsRt = UI.Rt(pointsGo);
@@ -695,11 +701,14 @@ namespace POGMods.Config
             UI.Stretch(UI.Rt(track));
             UI.AddImage(track, new Color(0.2f, 0.2f, 0.22f));
 
+            // The handle travels between half-handle insets, so at min/max it stays on the
+            // track instead of hanging half off the end, where the list's mask clipped it.
             var handleArea = UI.Make("HandleArea", sGo.transform);
-            UI.Stretch(UI.Rt(handleArea));
+            float half = UI.SliderHandleSize * 0.5f;
+            UI.Stretch(UI.Rt(handleArea), half, half, 0, 0);
             var handle = UI.Make("Handle", handleArea.transform);
             UI.Rt(handle).anchorMin = UI.Rt(handle).anchorMax = new Vector2(0f, 0.5f);
-            UI.Rt(handle).sizeDelta = new Vector2(14, 14);
+            UI.Rt(handle).sizeDelta = new Vector2(UI.SliderHandleSize, UI.SliderHandleSize);
             var hImg = UI.AddImage(handle, new Color(1f, 0.82f, 0.3f));
             _slider.fillRect = null;
             _slider.handleRect = UI.Rt(handle);

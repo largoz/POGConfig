@@ -24,8 +24,10 @@
 - **Fewer disk writes.** Settings were written to `MelonPreferences.cfg` on every slider tick
   while dragging. Changes are now saved half a second after the last change, when the panel
   closes, and when the game quits.
-- Step-point dots on sliders render at the same size at every resolution and no longer hang
-  off the ends of the track.
+- Slider handles stay on the track at the minimum and maximum. At the maximum the handle
+  used to hang half off the end, where the list clipped it and it looked squashed.
+- Step-point dots render at the same size at every resolution and sit exactly where the
+  handle stops for each step.
 - Key capture only scans keys on frames where something was pressed, instead of polling
   every key code each frame while a slot is listening.
 
