@@ -6,63 +6,66 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>POGMods.Config</RootNamespace>
     <AssemblyName>POGConfig</AssemblyName>
+    <!-- Game install folder (the one holding MelonLoader\). Defaults to the old layout where
+         this project sits at <game>\ModSource\POGConfig; override with -p:GameDir=... -->
+    <GameDir Condition="'$(GameDir)' == ''">$(MSBuildThisFileDirectory)..\..</GameDir>
   </PropertyGroup>
 
   <ItemGroup>
     <Reference Include="MelonLoader">
-      <HintPath>..\..\MelonLoader\net6\MelonLoader.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\net6\MelonLoader.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Il2CppInterop.Runtime">
-      <HintPath>..\..\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Il2Cppmscorlib">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\UnityEngine.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\UnityEngine.IMGUIModule.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.UI">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\UnityEngine.UI.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.UIModule">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\UnityEngine.UIModule.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.TextRenderingModule">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\UnityEngine.TextRenderingModule.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\UnityEngine.InputLegacyModule.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.InputLegacyModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Assembly-CSharp">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Unity.TextMeshPro">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\Unity.TextMeshPro.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="0Harmony">
-      <HintPath>..\..\MelonLoader\net6\0Harmony.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\net6\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Il2CppRewired_Core">
-      <HintPath>..\..\MelonLoader\Il2CppAssemblies\Il2CppRewired_Core.dll</HintPath>
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Il2CppRewired_Core.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

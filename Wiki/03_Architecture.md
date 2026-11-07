@@ -13,10 +13,12 @@ Core types in `ConfigPlugin.cs`:
 - `ConfigEntry` (abstract base class)
   - common interface for all row types
 - Entry implementations:
+  - `HeaderEntry`
   - `ToggleEntry`
   - `SliderEntry`
   - `OptionsSliderEntry`
   - `KeyEntry`
+  - `ButtonEntry`
 - `ConfigBehaviour` (`MonoBehaviour`)
   - runtime controller for panel lifecycle and updates
 
@@ -29,7 +31,12 @@ High-level flow:
 3. `POGConfig` stores entries in shared registry.
 4. UI is built/updated by `ConfigBehaviour` when panel is opened.
 5. While panel is open, entries update via callbacks (`get`/`set`).
-6. If `prefKey` is set, values are persisted through `MelonPreferences`.
+6. If `prefKey` is set, values are persisted through `MelonPreferences`. Changes are written
+   half a second after the last change, when the panel closes and when the game quits, so
+   dragging a slider does not rewrite the file every frame.
+7. When the panel closes (DONE, Esc, or the game leaving the menu) any edit in progress is
+   finished first: a typed value is applied, a key listen is cancelled. Then `PanelClosed`
+   fires.
 
 ## 3) Why this pattern works
 

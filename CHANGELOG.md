@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.0.12
+
+**Fixes**
+
+- **Esc cancels before it closes.** Since 1.0.11 the game's own cancel input closed the
+  whole panel on every Esc, even when that Esc was meant to cancel a key listen, a value
+  being typed or the search box. Esc now cancels that first; a second Esc closes the panel.
+- **Hidden rows no longer react to clicks.** On a page long enough to scroll, rows scrolled
+  out of view were only hidden: clicking the mod title or the header area above the list
+  could start editing a hidden slider value, start listening on a hidden key slot, or clear
+  a hidden bind. A row now only counts as clicked when the click is inside the visible list.
+  The sidebar mod list had the same problem under the panel title and is fixed the same way.
+- **Closing the panel ends any edit in progress.** Closing with DONE, or the game leaving
+  the menu, while a slider value was being typed or the search box was active left that
+  edit open: the panel reopened still in edit mode with the typed text neither applied nor
+  discarded. Closing now applies the typed value, cancels a key listen and leaves search
+  edit mode. Switching pages does the same.
+- **Registering the same mod name twice no longer breaks saving.** The second call added a
+  duplicate page, and MelonLoader refused to create the already existing preference keys,
+  so that page's changes were never saved. A repeat `Register` now replaces the earlier
+  page and reuses the existing keys.
+- **Fewer disk writes.** Settings were written to `MelonPreferences.cfg` on every slider tick
+  while dragging. Changes are now saved half a second after the last change, when the panel
+  closes, and when the game quits.
+- Step-point dots on sliders render at the same size at every resolution and no longer hang
+  off the ends of the track.
+- Key capture only scans keys on frames where something was pressed, instead of polling
+  every key code each frame while a slot is listening.
+
+**New for mod authors**
+
+- `ButtonEntry(label, buttonText, onClick)`: a row with a button that runs an action, for
+  things like "Reset stats" or "Reload".
+- `POGConfig.PanelOpened` and `POGConfig.PanelClosed` events. `PanelClosed` fires after any
+  value still being typed has been applied, so it is the place to apply settings that are
+  expensive to change one at a time.
+
+Fully compatible with mods built against 1.0.x: the public API only gained members.
+
 ## 1.0.11
 
 **Fixed: the MOD SETTINGS panel would not open after the Pit of Goblin v1.0 update.**

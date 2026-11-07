@@ -3,12 +3,17 @@
 In-game configuration UI framework for **Pit of Goblin** mods (MelonLoader, IL2CPP).
 
 `POGConfig` gives mod authors a shared MOD SETTINGS panel with ready-to-use controls:
+- `HeaderEntry` (section heading)
 - `ToggleEntry`
 - `SliderEntry` (editable numeric box + optional suffix formatting)
 - `OptionsSliderEntry` (discrete mode selector)
-- `KeyEntry` (runtime key rebinding)
+- `KeyEntry` (runtime key rebinding, up to 3 keyboard/mouse slots)
+- `ButtonEntry` (a button that runs an action)
 
-**Repo:** [github.com/LargoScript/POGConfig](https://github.com/LargoScript/POGConfig) · **Wiki:** [`Wiki/`](Wiki/) ([on GitHub](https://github.com/LargoScript/POGConfig/tree/main/Wiki))
+It also has a VANILLA BINDS tab that edits the game's own controls, and a RESTORE DEFAULTS
+button on every page.
+
+**Repo:** [github.com/largoz/POGConfig](https://github.com/largoz/POGConfig) · **Wiki:** [`Wiki/`](Wiki/) ([on GitHub](https://github.com/largoz/POGConfig/tree/main/Wiki))
 
 **Thunderstore:** [package page](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/) · [Thunderstore Wiki](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/wiki)
 
@@ -24,13 +29,16 @@ In-game configuration UI framework for **Pit of Goblin** mods (MelonLoader, IL2C
 
 ## Dev helper
 
-`build_and_deploy.py` — builds this project (`dotnet build -c Release`) and
-copies the resulting DLL straight into `../../Mods/`. Convenience only, no
-required arguments:
+`build_and_deploy.py` builds this project (`dotnet build -c Release`) and copies the DLL
+into the game's `Mods` folder. It finds the game as the first parent folder holding
+`Pit of Goblin.exe`, or takes it from the `POG_GAME_DIR` environment variable:
 
-```powershell
-python build_and_deploy.py
+```sh
+POG_GAME_DIR="/path/to/Pit of Goblin" python build_and_deploy.py
 ```
+
+Building by hand works the same way: `dotnet build -c Release -p:GameDir="/path/to/Pit of Goblin"`.
+The csproj reads MelonLoader and the game's interop assemblies from `$(GameDir)/MelonLoader`.
 
 ---
 
@@ -41,11 +49,17 @@ Add a reference to `POGConfig.dll`, then register your entries in `OnInitializeM
 ```csharp
 POGConfig.Register("My Mod", new List<ConfigEntry>
 {
-    new ToggleEntry("Enable Feature", () => enabled, v => enabled = v),
-    new SliderEntry("Speed", () => speed, v => speed = v, 0f, 10f, x => $"{x:F1}"),
-    new KeyEntry("Hotkey", () => hotkey, v => hotkey = v),
+    new HeaderEntry("General"),
+    new ToggleEntry("Enable Feature", () => enabled, v => enabled = v, "Enabled"),
+    new SliderEntry("Speed", () => speed, v => speed = v, 0f, 10f, x => $"{x:F1}", "Speed"),
+    new KeyEntry("Hotkey", () => hotkey, v => hotkey = v, "Hotkey"),
+    new ButtonEntry("Statistics", "RESET", () => stats.Clear()),
 });
+
+POGConfig.PanelClosed += ApplyExpensiveSettings; // optional
 ```
+
+Calling `Register` again with the same name replaces the earlier page.
 
 ---
 
@@ -67,6 +81,11 @@ POGConfig.Register("My Mod", new List<ConfigEntry>
   - Slider snaps to indices.
 - **KeyEntry**
   - Capture and persist key bindings from the UI.
+  - One slot by default, up to 3 with `KeyEntry(label, get(slot), set(slot, key), prefKey, slotCount)`.
+- **ButtonEntry**
+  - Runs an action when pressed. No value, not saved.
+- **HeaderEntry**
+  - A section heading between groups of entries.
 
 ### 2) Range / Origin / Steps (from POGTestMod patterns)
 
@@ -119,12 +138,15 @@ new OptionsSliderEntry(
 ### 4) Preferences / Persistence
 
 Each entry can optionally receive `prefKey`. Values are saved via `MelonPreferences` and restored on next launch.
+Saving happens half a second after the last change, when the panel closes and when the game quits.
 
 ### 5) Integration Notes
 
 - UI is opened from MOD SETTINGS panel.
 - Hotkey-based features should usually be disabled while the panel is open:
   `if (!POGConfig.PanelOpen) { ... }`
+- `POGConfig.PanelOpened` / `POGConfig.PanelClosed` fire after the panel opens / closes.
+  A value still being typed has been applied by the time `PanelClosed` fires.
 - Keep heavy work out of per-frame callbacks; use entries to update cached runtime values.
 
 </details>

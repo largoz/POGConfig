@@ -1,38 +1,32 @@
-# POGConfig
+# POG Config
 
-In-game config UI framework for **Pit of Goblin** mods.
+One shared **MOD SETTINGS** panel for Pit of Goblin mods, plus an editor for the game's own key binds.
 
-POGConfig provides a shared **MOD SETTINGS** panel that any mod can register entries into. It handles rendering, persistence, scrolling, and input — mod authors only write entry declarations.
+Mods that support POG Config add their settings to this panel, so you get one place to change everything instead of editing config files.
 
-**Install:** Thunderstore Mod Manager / r2modman, or place `POGConfig.dll` in the game `Mods` folder. Mods that depend on POGConfig should load after it (MelonLoader respects alphabetical order by default).
+**Install:** Thunderstore Mod Manager / r2modman, or put `POGConfig.dll` into the game's `Mods` folder (MelonLoader required).
 
-**Source & Wiki:** [github.com/LargoScript/POGConfig](https://github.com/LargoScript/POGConfig) — full developer Wiki at [`/Wiki`](https://github.com/LargoScript/POGConfig/tree/main/Wiki).
-
-**Thunderstore:** [package page](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/) · [Thunderstore Wiki](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/wiki).
+**Source and developer Wiki:** [github.com/largoz/POGConfig](https://github.com/largoz/POGConfig) ([Wiki](https://github.com/largoz/POGConfig/tree/main/Wiki)) · [Thunderstore Wiki](https://thunderstore.io/c/pit-of-goblin/p/Largo/POG_Config/wiki)
 
 ---
 
-## Features
+## For players
 
-- **MODS button** injected into both the main menu and pause menu.
-- **Scrollable panel** — mouse wheel and clickable scrollbar. Scrollbar appears only when content overflows.
-- **Four entry types:** toggle, slider (with inline numeric text input), options list, keybind.
-- **MelonPreferences persistence** — per-entry opt-in, auto-saved on change.
-- **Hotkey suppression** — `POGConfig.PanelOpen` lets other mods pause their hotkeys while the panel is open.
-- **Marquee animation** — label and value text scroll on hover when they overflow their column.
-- **Bidirectional slider fill** — fill bar grows from a configurable origin point, not just the left edge.
-- **Step tick marks** — optional evenly-spaced markers on a slider.
+- A **MODS** button in the main menu and in the pause menu, styled like the game's own buttons, with mouse, keyboard and gamepad navigation.
+- A sidebar with every mod that registered settings, with a search box.
+- **VANILLA BINDS** tab: the game's own controls, editable. Each action has two keyboard slots and one mouse slot, exactly like the game's Controls screen. Changes go straight into the game's settings.
+- **RESTORE DEFAULTS** on every page, including the vanilla binds.
+- Settings are saved automatically.
+- `Esc` cancels what you are doing (typing a value, waiting for a key) and otherwise closes the panel.
 
 ---
 
-## For Developers
+## For mod authors
 
 <details>
-<summary><strong>Click To Expand</strong></summary>
+<summary><strong>Click to expand</strong></summary>
 
-### Project reference
-
-Add to your `.csproj`:
+### Reference
 
 ```xml
 <Reference Include="POGConfig">
@@ -41,13 +35,13 @@ Add to your `.csproj`:
 </Reference>
 ```
 
-Add `using POGMods.Config;` to your plugin file.
+Add `using POGMods.Config;` and declare a dependency on `Largo-POG_Config` in your Thunderstore manifest.
 
----
+### Registering
 
-### Registration pattern
+Register once, usually from `OnInitializeMelon()`. Load order does not matter: `Register` only stores your entries, and the panel is built the first time it opens.
 
-Wrap registration in a `[MethodImpl(MethodImplOptions.NoInlining)]` helper so the IL2Cpp JIT only resolves POGConfig types when the method is actually called. This makes POGConfig an **optional** dependency — your mod loads cleanly even if POGConfig is absent.
+Wrapping the call in a `NoInlining` helper keeps POG Config optional: your mod still loads if POG Config is not installed.
 
 ```csharp
 using System.Collections.Generic;
@@ -57,7 +51,6 @@ using POGMods.Config;
 public override void OnInitializeMelon()
 {
     try { TryRegisterConfig(); } catch { }
-    MelonLogger.Msg("My Mod loaded.");
 }
 
 [MethodImpl(MethodImplOptions.NoInlining)]
@@ -65,216 +58,127 @@ private static void TryRegisterConfig()
 {
     POGConfig.Register("My Mod", new List<ConfigEntry>
     {
-        new ToggleEntry("Enable Feature", () => _enabled, v => _enabled = v),
-        new SliderEntry("Speed",          () => _speed,   v => _speed   = v, 0f, 10f),
-        new KeyEntry("Hotkey",            () => _key,     v => _key     = v),
-    });
+        new HeaderEntry("General"),
+        new ToggleEntry("Enable Feature", () => _enabled, v => _enabled = v, "Enabled"),
+        new SliderEntry("Speed", () => _speed, v => _speed = v, 0f, 10f, v => $"{v:F1}", "Speed"),
+        new HeaderEntry("Input"),
+        new KeyEntry("Hotkey", () => _key, v => _key = v, "Hotkey"),
+    }, new ModInfo("1.0.0", "Short description", "You"));
 }
 ```
 
-`Register` also creates a `MelonPreferences` category named after your mod (spaces → underscores). Entries with a `prefKey` load and save automatically within that category.
-
----
-
-### `POGConfig.PanelOpen`
-
-```csharp
-public static bool PanelOpen { get; }
-```
-
-`true` while the MOD SETTINGS panel is visible. Check it before processing any in-game hotkey so keypresses inside the panel don't trigger game actions:
-
-```csharp
-void Update()
-{
-    if (!POGConfig.PanelOpen && Input.GetKeyDown(_toggleKey))
-        Toggle();
-}
-```
-
----
+- The mod name is the sidebar label and the `MelonPreferences` category (spaces become `_`). Keep it stable across releases.
+- The values your fields hold when you call `Register` are the defaults that RESTORE DEFAULTS goes back to. Set them first.
+- Calling `Register` again with the same name replaces your earlier page instead of adding a second one.
 
 ### Entry types
 
-#### `ToggleEntry`
+| Type | What it shows |
+|---|---|
+| `HeaderEntry(label)` | A section heading. No value. |
+| `ToggleEntry(label, get, set[, prefKey])` | A checkbox. |
+| `SliderEntry(label, get, set, min, max[, fmt, prefKey, originValue, showFill, wholeNumbers, stepPointsCount])` | A slider with a value box you can type into. |
+| `OptionsSliderEntry(label, get, set, options[, prefKey])` | A slider that picks one of several named options. |
+| `KeyEntry(label, get, set[, prefKey])` | One key bind slot. |
+| `KeyEntry(label, get(slot), set(slot, key), prefKey, slotCount)` | Up to 3 key bind slots. |
+| `ButtonEntry(label, buttonText, onClick)` | A button that runs an action. New in 1.0.12. |
 
-Renders as a 40×24 yellow checkbox on the right side of the row.
-
-```csharp
-new ToggleEntry(string label, Func<bool> get, Action<bool> set)
-new ToggleEntry(string label, Func<bool> get, Action<bool> set, string prefKey)
-```
-
-- The toggle calls `set` immediately when the user clicks it.
-- `OnUpdate` polls `get()` every frame and silently syncs the visual state if the value changed externally.
-- `prefKey` auto-saves to `MelonPreferences` on every change.
-
-```csharp
-new ToggleEntry("God Mode", () => _god, v => _god = v, "GodMode")
-```
-
----
+`get` is polled while the panel is open, so the row follows changes your mod makes on its own. `set` is called when the player changes the value.
 
 #### `SliderEntry`
 
-Row layout: **26 % label | 26 % value input | 48 % slider**
-
-Label and value columns clip with `RectMask2D` and animate a marquee on hover when the text overflows.
-
-Full constructor (all parameters after `max` are optional):
-
 ```csharp
 new SliderEntry(
-    string label,
-    Func<float> get,
-    Action<float> set,
-    float min,
-    float max,
-    Func<float, string> fmt = null,   // display formatter; default: v => v.ToString("F1")
-    string prefKey          = null,   // MelonPreferences key; null = no persistence
-    float  originValue      = 0f,     // where the yellow fill bar anchors from
-    bool   showFill         = true,   // false hides the fill bar entirely
-    bool   wholeNumbers     = false,  // true snaps the handle to integers
-    int    stepPointsCount  = 0)      // ≥2 draws evenly-spaced tick dots along the track
+    string label, Func<float> get, Action<float> set,
+    float min, float max,
+    Func<float, string> fmt = null,   // display text; default v => v.ToString("F1")
+    string prefKey          = null,
+    float  originValue      = 0f,     // the fill bar grows from here, in both directions
+    bool   showFill         = true,
+    bool   wholeNumbers     = false,  // snap to integers
+    int    stepPointsCount  = 0)      // 2 or more draws evenly spaced dots on the track
 ```
 
-**Value input field** — click the yellow number box to type a value directly; Enter confirms, Escape cancels, clicking outside also confirms. The formatter suffix (e.g. `"s"`, `"%"`) is stripped on parse. A regex extracts the first numeric token, so `"43s"` and `"43 seconds"` both parse as `43`. Enter confirms, Escape cancels. Values are clamped to `[min, max]`.
-
-**Bidirectional fill** — the yellow bar spans from `originValue` to the current value. If the current value is below origin it grows left; above origin it grows right. Set `showFill: false` to hide it entirely (recommended for `wholeNumbers` step sliders).
-
-**Step tick marks** — `stepPointsCount` draws that many 4×4 px dots evenly from left to right edge of the track. They are purely visual; combine with `wholeNumbers: true` to make the handle snap between them.
-
-**Column widths** — by default the row is split 35 % label / 15 % value box / 50 % slider. Override per-entry with object initializer syntax:
+- Click the value box to type a number. `Enter` or a click elsewhere applies it, `Esc` cancels. A suffix from your formatter (`43s`, `80%`) is ignored when parsing. Values are clamped to `[min, max]`.
+- Column widths default to 35 % label, 15 % value box, the rest slider. Override with `{ LabelFraction = 0.45f, ValueFraction = 0.10f }`.
 
 ```csharp
-new SliderEntry("Speed", () => spd, v => spd = v, 0f, 10f)
-    { LabelFraction = 0.45f, ValueFraction = 0.10f }
+new SliderEntry("Volume", () => vol, v => vol = v, 0f, 1f, v => $"{v * 100:F0}%", "Volume")
+
+new SliderEntry("Points", () => pts, v => pts = v, 0f, 8f, v => $"{v:F0}",
+    "Points", 0f, false, true, 9)   // whole numbers, 9 dots, no fill
 ```
-
-The slider takes whatever fraction remains after label + value + a 2 % gap.
-
-**Examples:**
-
-```csharp
-// Simple, 0–100 %, no persistence
-new SliderEntry("Volume", () => vol, v => vol = v,
-    0f, 1f, v => $"{v * 100:F0}%")
-
-// Bidirectional fill from 0, persisted
-new SliderEntry("Temperature", () => temp, v => temp = v,
-    -50f, 50f, v => $"{v:F1}°C",
-    "Temp", originValue: 0f)
-
-// Integer steps 0–8 with 9 tick dots, no fill, persisted
-new SliderEntry("Points", () => (float)pts, v => pts = (int)v,
-    0f, 8f, v => $"{v:F0}",
-    "Points", originValue: 0f, showFill: false, wholeNumbers: true, stepPointsCount: 9)
-
-// Numeric suffix stripped on parse ("43s" → 43)
-new SliderEntry("Backup Interval", () => sec, v => sec = v,
-    5f, 180f, v => $"{v:F0}s", "BackupSec", originValue: 5f)
-```
-
----
 
 #### `OptionsSliderEntry`
 
-A slider that snaps to integer indices and shows a string label for each position. No fill bar. Suitable for named modes (difficulty, quality preset, etc.).
-
 ```csharp
-new OptionsSliderEntry(
-    string   label,
-    Func<int> get,
-    Action<int> set,
-    string[] options,
-    string   prefKey = null)
+new OptionsSliderEntry("Difficulty", () => _difficulty, v => _difficulty = v,
+    new[] { "Easy", "Normal", "Hard" }, "Difficulty")
 ```
 
-- `options` is the full list of display strings, index 0 = leftmost.
-- The slider's `wholeNumbers` is forced `true` and `maxValue = options.Length - 1`.
-- `OnUpdate` polls `get()` and syncs the visual state if the index changed externally.
-- `prefKey` saves/loads the integer index.
-
-```csharp
-new OptionsSliderEntry(
-    "Difficulty",
-    () => _difficulty,
-    v  => _difficulty = v,
-    new[] { "Easy", "Normal", "Hard" },
-    "Difficulty")
-```
-
----
+The value is the option index. Saved as an `int`.
 
 #### `KeyEntry`
 
-Row layout: **42 % label | 28 % current key name | 90 px "Change" button**
-
 ```csharp
-new KeyEntry(string label, Func<KeyCode> get, Action<KeyCode> set)
-new KeyEntry(string label, Func<KeyCode> get, Action<KeyCode> set, string prefKey)
+// One slot
+new KeyEntry("Toggle Key", () => _toggleKey, v => _toggleKey = v, "ToggleKey")
+
+// Up to three slots
+private static readonly KeyCode[] _fire = { KeyCode.Mouse0, KeyCode.None, KeyCode.None };
+new KeyEntry("Fire", slot => _fire[slot], (slot, v) => _fire[slot] = v, "Fire", 3)
 ```
 
-- Clicking **Change** enters listen mode. The next `Input.GetKeyDown` press is bound. Press Escape to cancel without changing the binding.
-- Clicking **Clear** removes the binding — sets the key to `KeyCode.None`, displayed as `— none —`. Useful for making a hotkey optional.
-- Only one `KeyEntry` can be in listen mode at a time (`KeyEntry.AnyWaiting` flag).
-- `prefKey` saves/loads the key name as a string via `Enum.Parse<KeyCode>`. `KeyCode.None` is stored as `"None"` and loaded correctly.
+- Click a slot, then press a key or a mouse button. `Esc` cancels. The small **x** unbinds the slot (`KeyCode.None`).
+- Every slot accepts keyboard keys and mouse buttons. Set `{ AllowMouseButtons = false }` for a keyboard-only entry.
+- Slot 1 is saved under `prefKey`, slots 2 and 3 under `prefKey_2` and `prefKey_3`.
+- Treat `KeyCode.None` as "no hotkey": `if (_toggleKey != KeyCode.None && Input.GetKeyDown(_toggleKey))`.
 
-**`AllowMouseButtons`** — by default `Mouse0`–`Mouse6` are excluded from listen mode (prevents accidentally binding a mouse click). Opt in per-entry:
-
-```csharp
-new KeyEntry("Attack", () => _key, v => _key = v) { AllowMouseButtons = true }
-```
-
----
-
-### Persistence details
-
-`MelonPreferences` categories are created as `modName.Replace(" ", "_")` automatically inside `Register`. You do not manage the category yourself. Each entry with a non-null `prefKey`:
-
-| Entry type | Stored as | Loaded via |
-|---|---|---|
-| `ToggleEntry` | `bool` | direct assignment |
-| `SliderEntry` | `float` | clamped to `[min, max]`, rounded if `wholeNumbers` |
-| `OptionsSliderEntry` | `int` | clamped to `[0, options.Length - 1]` |
-| `KeyEntry` | `string` (key name) | `Enum.TryParse<KeyCode>` |
-
-Saving happens on every value change (inside the wrapped `set` callback). The preferences file is written via `MelonPreferences.Save()`.
-
----
-
-### Runtime behavior notes
-
-- The `ConfigBehaviour` MonoBehaviour runs on a `DontDestroyOnLoad` runner object with `HideFlags.HideAndDontSave`. The UGUI Canvas lives on a separate root `DontDestroyOnLoad` object — these must not share the same parent to avoid the canvas being hidden by `HideAndDontSave`.
-- `BuildStaticUI` is called from `Start` and retried from `Update` on failure. `_uiReady = false` is set on exception, allowing recovery the next frame.
-- Content rows are built lazily in `EnsureContent` the first time the panel is opened. If `POGConfig.RegistryVersion` has changed since the last build (a mod registered after the first open), content is destroyed and rebuilt.
-- Click detection uses `RectTransformUtility.RectangleContainsScreenPoint(rt, point, null)` — the `null` camera argument is required for `ScreenSpaceOverlay` canvas, because `GetWorldCorners` returns canvas-centered world coordinates while `Input.mousePosition` is bottom-left screen pixels.
-- Sliders and toggles use Unity's `EventSystem` pipeline (drag, click). POGConfig creates a `POG_EventSystem` with `StandaloneInputModule` if no `EventSystem` exists in the scene.
-- The scrollbar is manually implemented (no `ScrollRect`). `ScrollContent.anchoredPosition.y = _scrollOffset` drives the position; `RectMask2D` on the viewport clips overflow. The thumb height is `VIEWPORT_H² / totalContentH`, clamped to a 30 px minimum.
-- `NetworkMenu.TogglePauseMenu` is Harmony-patched: if the panel is open when the game tries to close the pause menu, the patch closes the panel instead and returns `false` to suppress the original call.
-
----
-
-### Extending with a custom entry type
-
-Subclass `ConfigEntry` and override the internal methods:
+#### `ButtonEntry`
 
 ```csharp
-public class MyEntry : ConfigEntry
-{
-    public MyEntry(string label) : base(label) { }
-
-    // Build UGUI children inside the provided row GameObject.
-    // Row is 40 px tall, full viewport width.
-    // Use Clicks.Register(btnRt, callback) for clickable buttons.
-    internal override void BuildRowInto(GameObject row, TMP_FontAsset font) { ... }
-
-    // Called every frame while the panel is open.
-    internal override void OnUpdate() { ... }
-
-    // Called once during Register() to wire up MelonPreferences.
-    internal override void BindPrefs(MelonPreferences_Category cat) { ... }
-}
+new ButtonEntry("Statistics", "RESET", () => _stats.Clear())
 ```
+
+Runs `onClick` when pressed. It has no value, is not saved, and RESTORE DEFAULTS leaves it alone. An exception thrown by `onClick` is logged, not rethrown.
+
+### Panel state and events
+
+```csharp
+public static bool PanelOpen { get; }
+public static event Action PanelOpened;
+public static event Action PanelClosed;
+```
+
+Check `PanelOpen` before handling your hotkeys, so keys pressed inside the panel don't trigger game actions:
+
+```csharp
+if (!POGConfig.PanelOpen && Input.GetKeyDown(_toggleKey)) Toggle();
+```
+
+`PanelClosed` fires after any value still being typed has been applied. Use it for settings that are expensive to apply one change at a time:
+
+```csharp
+POGConfig.PanelClosed += RebuildOverlay;
+```
+
+### Saving
+
+Entries with a `prefKey` load their saved value during `Register` and save on change.
+
+| Entry | Saved as |
+|---|---|
+| `ToggleEntry` | `bool` |
+| `SliderEntry` | `float` |
+| `OptionsSliderEntry` | `int` (option index) |
+| `KeyEntry` | `string` (key name) |
+
+Changes are written to `UserData/MelonPreferences.cfg` half a second after the last change, when the panel closes, and when the game quits. Dragging a slider no longer writes the file every frame.
+
+Only changes made through the panel are saved. If your mod changes a value itself (for example through a hotkey), the panel shows the new value but your mod is responsible for saving it.
+
+### Custom entry types
+
+`ConfigEntry`'s build and update hooks are internal, so other assemblies cannot add new entry types. If you need one, open an issue on GitHub.
 
 </details>

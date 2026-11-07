@@ -21,6 +21,7 @@ namespace POGMods.Config
     {
         internal static readonly Dictionary<RectTransform, Action> Map = new();
         internal static void Register(RectTransform rt, Action cb) => Map[rt] = cb;
+        internal static void Unregister(RectTransform rt) { if (rt != null) Map.Remove(rt); }
         internal static void Clear() => Map.Clear();
     }
 
@@ -85,6 +86,26 @@ namespace POGMods.Config
             rt.offsetMin = new Vector2(padL,  -(yTop + height));
             rt.offsetMax = new Vector2(-padR, -yTop);
         }
+
+        // Flat button pinned to the right edge of `parent`, vertically centred. Returns its
+        // rect so the caller can register the click.
+        internal static RectTransform AddButton(Transform parent, string label, TMP_FontAsset font,
+            Color bg, Color fg, float width = 170f, float height = 26f)
+        {
+            var go = Make("Btn", parent);
+            var rt = Rt(go);
+            rt.anchorMin = rt.anchorMax = new Vector2(1f, 0.5f);
+            rt.pivot = new Vector2(1f, 0.5f);
+            rt.sizeDelta = new Vector2(width, height);
+            rt.anchoredPosition = Vector2.zero;
+            AddImage(go, bg);
+            var txtGo = Make("Text", go.transform);
+            Stretch(Rt(txtGo), 6, 6, 0, 0);
+            var tmp = AddText(txtGo, label, font, 12, fg, TextAlignmentOptions.Center);
+            tmp.enableWordWrapping = false;
+            tmp.overflowMode = TextOverflowModes.Ellipsis;
+            return rt;
+        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -101,6 +122,11 @@ namespace POGMods.Config
         internal virtual void BuildRow(Transform parent, TMP_FontAsset font) { }
         internal virtual void OnUpdate() { }
         internal virtual void BindPrefs(MelonPreferences_Category cat) { }
+
+        // Ends an interaction still in progress (typing a value, listening for a key).
+        // Called before the rows are rebuilt and when the panel closes, so nothing is
+        // left half-open on rows that are gone or hidden.
+        internal virtual void EndInteraction() { }
 
         // Restore-defaults support. CaptureDefault runs at Register time BEFORE BindPrefs
         // loads any saved value, so "default" = whatever the mod hardcoded, not whatever
@@ -137,6 +163,43 @@ namespace POGMods.Config
         }
     }
 
+    /// <summary>
+    /// A row with a button that runs an action, e.g. "Reset stats" or "Reload config".
+    /// Holds no value, is not persisted, and RESTORE DEFAULTS leaves it alone.
+    /// </summary>
+    public class ButtonEntry : ConfigEntry
+    {
+        private readonly string _buttonText;
+        private readonly Action _onClick;
+
+        public ButtonEntry(string label, string buttonText, Action onClick) : base(label)
+        {
+            _buttonText = string.IsNullOrEmpty(buttonText) ? "RUN" : buttonText;
+            _onClick = onClick;
+        }
+
+        internal override void BuildRowInto(GameObject row, TMP_FontAsset font)
+        {
+            var lbl = UI.Make("Label", row.transform);
+            UI.Rt(lbl).anchorMin = Vector2.zero;
+            UI.Rt(lbl).anchorMax = new Vector2(0.60f, 1f);
+            UI.Rt(lbl).offsetMin = UI.Rt(lbl).offsetMax = Vector2.zero;
+            var lblTmp = UI.AddText(lbl, Label, font, 14, new Color(0.88f, 0.88f, 0.88f));
+            lblTmp.enableWordWrapping = false;
+            lblTmp.overflowMode = TextOverflowModes.Ellipsis;
+
+            var btnRt = UI.AddButton(row.transform, _buttonText, font,
+                                     new Color(0.24f, 0.20f, 0.10f), new Color(1f, 0.82f, 0.3f));
+            Clicks.Register(btnRt, Run);
+        }
+
+        private void Run()
+        {
+            try { _onClick?.Invoke(); }
+            catch (Exception ex) { MelonLogger.Warning($"[POGConfig] Button '{Label}': {ex.Message}"); }
+        }
+    }
+
     /// <summary>Optional metadata supplied by a mod when registering. All fields optional.</summary>
     public class ModInfo
     {
@@ -170,10 +233,10 @@ namespace POGMods.Config
         internal override void BindPrefs(MelonPreferences_Category cat)
         {
             if (_prefKey == null) return;
-            var pref = cat.CreateEntry(_prefKey, _get());
+            var pref = Prefs.Entry(cat, _prefKey, _get());
             _set(pref.Value);
             var orig = _set;
-            _set = v => { orig(v); pref.Value = v; MelonPreferences.Save(); };
+            _set = v => { orig(v); pref.Value = v; Prefs.MarkDirty(); };
         }
 
         internal override void BuildRowInto(GameObject row, TMP_FontAsset font)
@@ -263,7 +326,11 @@ namespace POGMods.Config
         private float _marqueeTimer;
         private const float MarqueeSpeed = 52f;
 
-        internal static bool AnyInputActive;
+        // The slider whose value box is being typed into, if any. "Some text input is
+        // active" is derived from this and the search box instead of a separate flag, so
+        // it cannot stay stuck true after the row or the panel goes away mid-edit.
+        private static SliderEntry s_editing;
+        internal static bool AnyInputActive => s_editing != null || ConfigBehaviour.SearchEditing;
 
         public SliderEntry(string label, Func<float> get, Action<float> set, float min, float max,
                            Func<float, string> fmt = null) : this(label, get, set, min, max, fmt, null) { }
@@ -291,14 +358,15 @@ namespace POGMods.Config
         private float _defaultValue;
         internal override void CaptureDefault() => _defaultValue = _get();
         internal override void RestoreDefault() => ApplyValue(_defaultValue, true);
+        internal override void EndInteraction() { if (_editingInput) StopEditing(true); }
 
         internal override void BindPrefs(MelonPreferences_Category cat)
         {
             if (_prefKey == null) return;
-            var pref = cat.CreateEntry(_prefKey, _get());
+            var pref = Prefs.Entry(cat, _prefKey, _get());
             _set(pref.Value);
             var orig = _set;
-            _set = v => { orig(v); pref.Value = v; MelonPreferences.Save(); };
+            _set = v => { orig(v); pref.Value = v; Prefs.MarkDirty(); };
         }
 
         internal override void BuildRowInto(GameObject row, TMP_FontAsset font)
@@ -394,26 +462,41 @@ namespace POGMods.Config
             UpdateFillFromOrigin(_lastValue);
         }
 
+        private const float StepDotUnits = 5f;
+        private static readonly Color StepDotColor = new Color(0.62f, 0.62f, 0.68f, 0.9f);
+
         private void BuildStepPoints(Transform sliderTransform)
         {
             if (_stepPointsCount < 2) return;
+
+            // Dot size in whole screen pixels. A quad N px wide covers exactly N pixel centres
+            // wherever it sits, so every dot renders the same size; a fractional size (4 canvas
+            // units = 2.8 px at 1366x768) came out 2 or 3 px depending on its position.
+            var canvas = sliderTransform.GetComponentInParent<Canvas>();
+            float scale = canvas != null && canvas.rootCanvas != null ? canvas.rootCanvas.scaleFactor : 1f;
+            if (scale <= 0f) scale = 1f;
+            float size = Mathf.Max(3f, Mathf.Round(StepDotUnits * scale)) / scale;
+            // Inset the row of dots so the end dots sit inside the track instead of being
+            // centred on its edges (half of them used to hang off the track).
+            float inset = size * 0.5f + 2f;
+
             var pointsGo = UI.Make("StepPoints", sliderTransform);
             var pointsRt = UI.Rt(pointsGo);
             pointsRt.anchorMin = new Vector2(0f, 0.5f);
             pointsRt.anchorMax = new Vector2(1f, 0.5f);
-            pointsRt.offsetMin = new Vector2(0f, -1f);
-            pointsRt.offsetMax = new Vector2(0f, 1f);
+            pointsRt.offsetMin = new Vector2(inset, -1f);
+            pointsRt.offsetMax = new Vector2(-inset, 1f);
 
             for (int i = 0; i < _stepPointsCount; i++)
             {
-                float t = _stepPointsCount <= 1 ? 0f : i / (float)(_stepPointsCount - 1);
+                float t = i / (float)(_stepPointsCount - 1);
                 var dot = UI.Make("P" + i, pointsGo.transform);
                 var dotRt = UI.Rt(dot);
                 dotRt.anchorMin = dotRt.anchorMax = new Vector2(t, 0.5f);
                 dotRt.pivot = new Vector2(0.5f, 0.5f);
-                dotRt.sizeDelta = new Vector2(4f, 4f);
+                dotRt.sizeDelta = new Vector2(size, size);
                 dotRt.anchoredPosition = Vector2.zero;
-                UI.AddImage(dot, new Color(0.48f, 0.48f, 0.52f, 0.75f), false);
+                UI.AddImage(dot, StepDotColor, false);
             }
         }
 
@@ -421,7 +504,7 @@ namespace POGMods.Config
         {
             if (AnyInputActive) return;
             _editingInput = true;
-            AnyInputActive = true;
+            s_editing = this;
             _marqueeTimer = 0f;
             _inputBuffer = ToEditableNumericString(_lastValue);
             if (_valueBgImg != null) _valueBgImg.color = new Color(0.28f, 0.22f, 0.08f);
@@ -431,7 +514,7 @@ namespace POGMods.Config
         private void StopEditing(bool commit)
         {
             _editingInput = false;
-            AnyInputActive = false;
+            if (s_editing == this) s_editing = null;
             if (_valueBgImg != null) _valueBgImg.color = new Color(0.16f, 0.16f, 0.18f, 0.95f);
             if (commit && TryParseValue(_inputBuffer, out var parsed))
                 ApplyValue(parsed, true);
@@ -521,7 +604,7 @@ namespace POGMods.Config
                 { StopEditing(true); return; }
 
                 if (Input.GetKeyDown(KeyCode.Escape))
-                { ConfigBehaviour.EscConsumed = true; StopEditing(false); return; }
+                { ConfigBehaviour.ConsumeEsc(); StopEditing(false); return; }
                 if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
                 { StopEditing(true); return; }
 
@@ -572,10 +655,10 @@ namespace POGMods.Config
         internal override void BindPrefs(MelonPreferences_Category cat)
         {
             if (_prefKey == null || _options.Length == 0) return;
-            var pref = cat.CreateEntry(_prefKey, Mathf.Clamp(_get(), 0, _options.Length - 1));
+            var pref = Prefs.Entry(cat, _prefKey, Mathf.Clamp(_get(), 0, _options.Length - 1));
             _set(Mathf.Clamp(pref.Value, 0, _options.Length - 1));
             var orig = _set;
-            _set = i => { orig(i); pref.Value = i; MelonPreferences.Save(); };
+            _set = i => { orig(i); pref.Value = i; Prefs.MarkDirty(); };
         }
 
         internal override void BuildRowInto(GameObject row, TMP_FontAsset font)
@@ -677,7 +760,10 @@ namespace POGMods.Config
         // false to restrict an entry to keyboard-only.
         public bool AllowMouseButtons { get; set; } = true;
 
-        internal static bool AnyWaiting;
+        // The entry listening for a key, if any. "Some slot is listening" is derived from
+        // this and the Vanilla tab instead of a separate flag that could be left stuck.
+        private static KeyEntry s_listening;
+        internal static bool AnyWaiting => s_listening != null || ConfigBehaviour.VanillaListening;
         private int _listeningSlot = -1;
         private int _listenStartFrame;
 
@@ -721,6 +807,7 @@ namespace POGMods.Config
             StopListening();
             for (int i = 0; i < _slotCount; i++) _set(i, _defaults[i]);
         }
+        internal override void EndInteraction() => StopListening();
 
         internal override void BindPrefs(MelonPreferences_Category cat)
         {
@@ -729,7 +816,7 @@ namespace POGMods.Config
             for (int i = 0; i < _slotCount; i++)
             {
                 string key = i == 0 ? _prefKey : $"{_prefKey}_{i + 1}";
-                var pref = cat.CreateEntry(key, _get(i).ToString());
+                var pref = Prefs.Entry(cat, key, _get(i).ToString());
                 if (Enum.TryParse<KeyCode>(pref.Value, out var loaded)) _set(i, loaded);
                 prefs[i] = pref;
             }
@@ -738,13 +825,13 @@ namespace POGMods.Config
             {
                 orig(slot, v);
                 if (slot >= 0 && slot < prefs.Length)
-                { prefs[slot].Value = v.ToString(); MelonPreferences.Save(); }
+                { prefs[slot].Value = v.ToString(); Prefs.MarkDirty(); }
             };
         }
 
         internal override void BuildRowInto(GameObject row, TMP_FontAsset font)
         {
-            _listeningSlot = -1; // fresh row: any prior listen belonged to destroyed UI
+            StopListening(); // fresh row: any prior listen belonged to destroyed UI
 
             var lbl = UI.Make("Label", row.transform);
             UI.Rt(lbl).anchorMin = Vector2.zero;
@@ -815,7 +902,7 @@ namespace POGMods.Config
         {
             if (AnyWaiting) return;
             _listeningSlot = slot;
-            AnyWaiting = true;
+            s_listening = this;
             _listenStartFrame = Time.frameCount;
             if (_slotTexts[slot] != null) _slotTexts[slot].text = "…";
             if (_slotBgs[slot] != null) _slotBgs[slot].color = ListeningBg;
@@ -829,7 +916,7 @@ namespace POGMods.Config
             // next OnUpdate refresh pass rewrites it from the actual value.
             _lastShown[_listeningSlot] = UnknownKey;
             _listeningSlot = -1;
-            AnyWaiting = false;
+            if (s_listening == this) s_listening = null;
         }
 
         private void ClearSlot(int slot)
@@ -843,12 +930,6 @@ namespace POGMods.Config
 
         internal override void OnUpdate()
         {
-            // Panel closed mid-listen: SetOverlayVisible(false) force-clears the global
-            // AnyWaiting flag but can't reach into entries. Resync on the next update so
-            // this entry doesn't stay stuck listening (olive background, and it would
-            // silently capture the first key pressed after the panel reopens).
-            if (_listeningSlot >= 0 && !AnyWaiting) StopListening();
-
             if (_listeningSlot < 0)
             {
                 for (int i = 0; i < _slotCount; i++)
@@ -866,26 +947,81 @@ namespace POGMods.Config
 
             if (SliderEntry.AnyInputActive) return;
             if (Input.GetKeyDown(KeyCode.Escape)) // cancel binding
-            { ConfigBehaviour.EscConsumed = true; StopListening(); return; }
+            { ConfigBehaviour.ConsumeEsc(); StopListening(); return; }
 
             // Swallow the very click that opened listening — otherwise, with
             // AllowMouseButtons on (the default for multi-slot entries), that same
             // Mouse0-down would be captured as the bind in the same frame.
             if (Time.frameCount == _listenStartFrame) return;
 
-            foreach (KeyCode kc in Enum.GetValues(typeof(KeyCode)))
+            var pressed = KeyCapture.PollDown(k => AllowMouseButtons || !KeyCapture.IsMouse(k));
+            if (pressed == KeyCode.None) return;
+            int slot = _listeningSlot;
+            _set(slot, pressed);
+            StopListening();
+            _lastShown[slot] = pressed;
+            if (_slotTexts[slot] != null) _slotTexts[slot].text = KeyDisplayName(pressed);
+            if (_clearGos[slot] != null) _clearGos[slot].SetActive(true);
+        }
+    }
+
+    // ── Key capture ───────────────────────────────────────────────────────────
+
+    internal static class KeyCapture
+    {
+        private static readonly KeyCode[] AllKeys = (KeyCode[])Enum.GetValues(typeof(KeyCode));
+
+        internal static bool IsMouse(KeyCode kc) => kc >= KeyCode.Mouse0 && kc <= KeyCode.Mouse6;
+
+        // First key or mouse button pressed this frame that `accept` allows, or None.
+        // Escape is never returned: it cancels listening. Input.anyKeyDown gates the
+        // scan, so the 300-odd GetKeyDown calls only run on frames with a press.
+        internal static KeyCode PollDown(Func<KeyCode, bool> accept)
+        {
+            if (!Input.anyKeyDown) return KeyCode.None;
+            foreach (var kc in AllKeys)
             {
                 if (kc == KeyCode.None || kc == KeyCode.Escape) continue;
-                if (!AllowMouseButtons && kc >= KeyCode.Mouse0 && kc <= KeyCode.Mouse6) continue;
-                if (!Input.GetKeyDown(kc)) continue;
-                int slot = _listeningSlot;
-                _set(slot, kc);
-                StopListening();
-                _lastShown[slot] = kc;
-                if (_slotTexts[slot] != null) _slotTexts[slot].text = KeyDisplayName(kc);
-                if (_clearGos[slot] != null) _clearGos[slot].SetActive(true);
-                break;
+                if (accept != null && !accept(kc)) continue;
+                if (Input.GetKeyDown(kc)) return kc;
             }
+            return KeyCode.None;
+        }
+    }
+
+    // ── Preferences ───────────────────────────────────────────────────────────
+    // MelonPreferences.Save() rewrites the whole preferences file. Changes are marked
+    // dirty here and written once input settles (and on panel close / game quit),
+    // instead of on every slider tick while dragging.
+
+    internal static class Prefs
+    {
+        private const float SaveDelaySeconds = 0.5f;
+        private static bool _dirty;
+        private static float _lastChange;
+
+        // Existing entry if the key is already there (a mod registering a second time),
+        // otherwise a new one. MelonLoader's CreateEntry throws on an existing key.
+        internal static MelonPreferences_Entry<T> Entry<T>(MelonPreferences_Category cat, string key, T defaultValue)
+            => cat.GetEntry<T>(key) ?? cat.CreateEntry(key, defaultValue);
+
+        internal static void MarkDirty()
+        {
+            _dirty = true;
+            _lastChange = Time.unscaledTime;
+        }
+
+        internal static void Tick()
+        {
+            if (_dirty && Time.unscaledTime - _lastChange >= SaveDelaySeconds) Flush();
+        }
+
+        internal static void Flush()
+        {
+            if (!_dirty) return;
+            _dirty = false;
+            try { MelonPreferences.Save(); }
+            catch (Exception ex) { MelonLogger.Warning($"[POGConfig] MelonPreferences.Save: {ex.Message}"); }
         }
     }
 
@@ -903,15 +1039,49 @@ namespace POGMods.Config
         private static readonly List<ModRecord> _mods = new();
         private static int _registryVersion;
 
-        // True while MOD SETTINGS panel is open. Check this before processing hotkeys.
-        public static bool PanelOpen { get; internal set; }
+        // True while the MOD SETTINGS panel is open. Check this before processing hotkeys.
+        // It is the only open/closed flag; POGConfig's own code reads it too.
+        public static bool PanelOpen { get; private set; }
+
+        /// <summary>Raised after the MOD SETTINGS panel opens.</summary>
+        public static event Action PanelOpened;
+
+        /// <summary>
+        /// Raised after the MOD SETTINGS panel closes. A value still being typed has been
+        /// applied by then, so this is the place to apply settings that are expensive to
+        /// change one at a time.
+        /// </summary>
+        public static event Action PanelClosed;
+
         internal static int RegistryVersion => _registryVersion;
+
+        internal static void SetPanelOpen(bool open)
+        {
+            if (PanelOpen == open) return;
+            PanelOpen = open;
+            var handlers = open ? PanelOpened : PanelClosed;
+            if (handlers == null) return;
+            foreach (Action h in handlers.GetInvocationList())
+            {
+                try { h(); }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[POGConfig] {(open ? nameof(PanelOpened) : nameof(PanelClosed))} handler: {ex.Message}");
+                }
+            }
+        }
 
         public static void Register(string modName, List<ConfigEntry> entries)
             => Register(modName, entries, null);
 
         public static void Register(string modName, List<ConfigEntry> entries, ModInfo info)
         {
+            if (string.IsNullOrEmpty(modName) || entries == null)
+            {
+                MelonLogger.Warning("[POGConfig] Register needs a mod name and an entry list; call ignored.");
+                return;
+            }
+
             foreach (var e in entries)
             {
                 try { e.CaptureDefault(); } // must run BEFORE BindPrefs overwrites with saved values
@@ -932,15 +1102,27 @@ namespace POGMods.Config
             catch (Exception ex)
             { MelonLogger.Warning($"[POGConfig] Prefs skipped for '{modName}': {ex.Message}"); }
 
-            _mods.Add(new ModRecord { Name = modName, Entries = entries, Info = info });
+            var rec = new ModRecord { Name = modName, Entries = entries, Info = info };
+            int existing = _mods.FindIndex(m => m.Name == modName);
+            if (existing >= 0)
+            {
+                // Registering the same name again replaces the earlier page instead of
+                // adding a duplicate one (e.g. a mod that re-registers after a reload).
+                foreach (var old in _mods[existing].Entries)
+                {
+                    try { old.EndInteraction(); }
+                    catch (Exception ex)
+                    { MelonLogger.Warning($"[POGConfig] EndInteraction '{old.Label}': {ex.Message}"); }
+                }
+                _mods[existing] = rec;
+                MelonLogger.Msg($"[POGConfig] Re-registered: {modName} ({entries.Count} entries, replaces the earlier registration)");
+            }
+            else
+            {
+                _mods.Add(rec);
+                MelonLogger.Msg($"[POGConfig] Registered: {modName} ({entries.Count} entries)");
+            }
             _registryVersion++;
-            MelonLogger.Msg($"[POGConfig] Registered: {modName} ({entries.Count} entries)");
-        }
-
-        // Backwards-compat tuple view used by Update() to iterate OnUpdate() across all mods.
-        internal static IEnumerable<(string Name, List<ConfigEntry> Entries)> GetAll()
-        {
-            foreach (var m in _mods) yield return (m.Name, m.Entries);
         }
 
         internal static IReadOnlyList<ModRecord> GetAllRecords() => _mods;
@@ -1239,7 +1421,7 @@ namespace POGMods.Config
     {
         static bool Prefix()
         {
-            if (ConfigBehaviour.PanelOpen)
+            if (POGConfig.PanelOpen)
             {
                 ConfigBehaviour.RequestClose();
                 return false;
@@ -1273,7 +1455,7 @@ namespace POGMods.Config
 
         public override void OnCancelButton()
         {
-            try { ConfigBehaviour.RequestClose(); }
+            try { ConfigBehaviour.OnGameCancel(); }
             catch (Exception ex) { MelonLogger.Warning($"[POGConfig] state.OnCancelButton: {ex.Message}"); }
         }
     }
@@ -1282,7 +1464,7 @@ namespace POGMods.Config
 
     public class PogConfigMelon : MelonMod
     {
-        public const string VERSION = "1.0.11";
+        public const string VERSION = "1.0.12";
 
         public override void OnInitializeMelon()
         {
@@ -1307,6 +1489,9 @@ namespace POGMods.Config
             runner.AddComponent<ConfigBehaviour>();
             MelonLogger.Msg($"POG Config {VERSION} loaded.");
         }
+
+        // Write a setting changed in the last moments before quitting.
+        public override void OnApplicationQuit() => Prefs.Flush();
     }
 
     // ── ConfigBehaviour ───────────────────────────────────────────────────────
@@ -1315,7 +1500,6 @@ namespace POGMods.Config
     {
         public ConfigBehaviour(IntPtr ptr) : base(ptr) { }
 
-        internal static bool PanelOpen;
         internal static void RequestClose() => _instance?.DoClose();
         private static ConfigBehaviour _instance;
 
@@ -1334,10 +1518,27 @@ namespace POGMods.Config
 
         internal static void OnStateShowElements(bool show) => _instance?.SetOverlayVisible(show);
 
-        // Set by any handler that reacted to Escape this frame (cancel search edit,
-        // cancel value edit, cancel key binding) so the same press doesn't ALSO
-        // close the panel. Reset at the start of every Update.
-        internal static bool EscConsumed;
+        // Read by SliderEntry.AnyInputActive / KeyEntry.AnyWaiting, which are derived from
+        // the actual edit and listen state rather than stored separately.
+        internal static bool SearchEditing => _instance != null && _instance._editingSearch;
+        internal static bool VanillaListening => _instance != null && _instance._vListenSlot >= 0;
+
+        // Any handler that reacts to Escape (cancel search edit, value edit, key binding)
+        // calls ConsumeEsc() so the same press doesn't ALSO close the panel. Stamped with
+        // the frame number rather than reset each Update, so the answer is right no matter
+        // whether the game's cancel handling runs before or after our Update.
+        private static int _escConsumedFrame = -1;
+        internal static bool EscConsumed => _escConsumedFrame == Time.frameCount;
+        internal static void ConsumeEsc() => _escConsumedFrame = Time.frameCount;
+
+        // The game's own cancel input (Esc, gamepad B) reaches the panel through
+        // PogConfigState.OnCancelButton. That press must not close the panel while it is
+        // cancelling something inside it: a key listen, a value edit or the search box.
+        internal static void OnGameCancel()
+        {
+            if (EscConsumed || KeyEntry.AnyWaiting || SliderEntry.AnyInputActive) return;
+            RequestClose();
+        }
 
         private const float PANEL_W    = 980f;
         private const float PANEL_H    = 600f;
@@ -1352,7 +1553,7 @@ namespace POGMods.Config
         private const float SIDEBAR_LIST_H = PANEL_H - TOP_H - BOT_H - SEARCH_H - SIDEBAR_PAD * 2;
         private const float SCROLL_SPD = 40f;
 
-        private bool _isPause, _isMainMenu, _panelOpen;
+        private bool _isPause, _isMainMenu;
         private bool _updateErrLogged;
 
         // ── Floating MODS button (pause-menu FALLBACK if native injection fails) ─
@@ -1371,6 +1572,8 @@ namespace POGMods.Config
         private RectTransform _scrollTrackRt;
         private RectTransform _scrollThumbRt;
         private GameObject    _scrollbarGo;
+        private RectTransform _contentVpRt;   // RectMask2D viewport around _scrollContent
+        private RectTransform _sidebarVpRt;   // RectMask2D viewport around _sidebarList
 
         private float _totalContentH;
         private float _scrollOffset;
@@ -1459,6 +1662,7 @@ namespace POGMods.Config
             if (!_uiReady) BuildStaticUI();
             try
             {
+                Prefs.Tick();
                 var nm = NetworkMenu.Instance;
                 var curState = (nm != null) ? nm.CurrentState : null;
                 string state = (curState != null) ? curState.GetIl2CppType().Name : "";
@@ -1470,14 +1674,14 @@ namespace POGMods.Config
                 // Main menu — inject a real NetworkMenuButton into the game's Buttons Panel.
                 // Hover/selection visuals come natively from NetworkMenuButton
                 // (OnPointerEnter → SelectButton → m_menu.SetSelected → OnSelect).
-                if (_isMainMenu && !_panelOpen)
+                if (_isMainMenu && !POGConfig.PanelOpen)
                 {
                     EnsureMainMenuModsBtn();
                     EnforceModsLabel(_mainMenuModsBtn);
                 }
 
                 // Pause menu — same native injection as the main menu.
-                if (_isPause && !_panelOpen)
+                if (_isPause && !POGConfig.PanelOpen)
                 {
                     EnsurePauseModsBtn();
                     EnforceModsLabel(_pauseModsBtn);
@@ -1485,7 +1689,7 @@ namespace POGMods.Config
 
                 // Floating MODS button — pause-menu FALLBACK, only if native injection
                 // didn't take (template button not found this frame).
-                bool showFloating = _isPause && !_panelOpen && _pauseModsBtn == null;
+                bool showFloating = _isPause && !POGConfig.PanelOpen && _pauseModsBtn == null;
                 if (_modsBtnRt != null)
                 {
                     _modsBtnRt.gameObject.SetActive(showFloating);
@@ -1504,11 +1708,11 @@ namespace POGMods.Config
                 // Our own state counts as "in menu"; without this the guard below would
                 // close the panel every frame while the native state is active.
                 bool inMenu = _isPause || _isMainMenu || isOurState;
-                if (!inMenu && _panelOpen) DoClose();
+                if (!inMenu && POGConfig.PanelOpen) DoClose();
 
                 HandleClicks();
 
-                if (_panelOpen)
+                if (POGConfig.PanelOpen)
                 {
                     // Keep the underlying menu deselected — game's Update may try to re-select
                     // a button; if so, Enter would submit it. Force null every frame.
@@ -1516,13 +1720,15 @@ namespace POGMods.Config
                     if (es != null && es.currentSelectedGameObject != null)
                         es.SetSelectedGameObject(null);
 
-                    EscConsumed = false;
                     UpdateThumbDrag();
                     HandleScroll();
                     HandleSearchInput();
                     UpdateVanillaListen();
-                    foreach (var (_, entries) in POGConfig.GetAll())
-                        foreach (var e in entries)
+                    // Only the page on screen has rows to sync. Pages switched away from
+                    // had their interactions ended when the content was rebuilt.
+                    var mods = POGConfig.GetAllRecords();
+                    if (_selectedMod >= 0 && _selectedMod < mods.Count)
+                        foreach (var e in mods[_selectedMod].Entries)
                             e.OnUpdate();
 
                     // Esc closes the panel — but only if no handler above already used
@@ -1557,14 +1763,8 @@ namespace POGMods.Config
             float sidebarMax = Mathf.Max(0, _sidebarTotalH - SIDEBAR_LIST_H);
 
             // Strict cursor-over-section gating so wheel scrolls only the panel under the cursor.
-            // IL2Cpp won't allow (RectTransform)Transform — the C# wrapper type is Transform even
-            // when the underlying Unity object IS a RectTransform. Use GetComponent<RectTransform>().
-            var sidebarVpRt = (_sidebarListRt != null && _sidebarListRt.parent != null)
-                ? _sidebarListRt.parent.GetComponent<RectTransform>() : null;
-            var contentVpRt = (_scrollContentRt != null && _scrollContentRt.parent != null)
-                ? _scrollContentRt.parent.GetComponent<RectTransform>() : null;
-            bool overSidebar = sidebarVpRt != null && HitTest(sidebarVpRt, mp);
-            bool overContent = contentVpRt != null && HitTest(contentVpRt, mp);
+            bool overSidebar = HitTest(_sidebarVpRt, mp);
+            bool overContent = HitTest(_contentVpRt, mp);
 
             if (Mathf.Abs(wheel) > 0.001f)
             {
@@ -1630,13 +1830,13 @@ namespace POGMods.Config
             Vector2 mp = Input.mousePosition;
 
             // Floating MODS button (pause only) — only when panel is closed
-            if (!_panelOpen && _modsBtnRt != null && _modsBtnRt.gameObject.activeSelf && HitTest(_modsBtnRt, mp))
+            if (!POGConfig.PanelOpen && _modsBtnRt != null && _modsBtnRt.gameObject.activeSelf && HitTest(_modsBtnRt, mp))
             {
                 OpenPanel();
                 return;
             }
 
-            if (!_panelOpen) return;
+            if (!POGConfig.PanelOpen) return;
 
             // Thumb hit — start a drag (handled per-frame by UpdateThumbDrag).
             // Check thumbs BEFORE the track-jump branch since thumb is a child of track.
@@ -1664,7 +1864,6 @@ namespace POGMods.Config
                 if (!_editingSearch)
                 {
                     _editingSearch = true;
-                    SliderEntry.AnyInputActive = true;
                     if (_searchBgImg != null) _searchBgImg.color = new Color(0.28f, 0.22f, 0.08f);
                     UpdateSearchTextDisplay();
                 }
@@ -1688,11 +1887,19 @@ namespace POGMods.Config
                 return;
             }
 
-            // Registered buttons (DONE, sidebar items, KeyEntry "Change", SliderEntry value boxes, etc.)
+            // Registered buttons (DONE, sidebar items, KeyEntry slots, SliderEntry value boxes, etc.)
+            // Rows live inside RectMask2D viewports. A row scrolled out of view is only hidden;
+            // its rect is still there (e.g. under the mod title), so a row counts as hit only
+            // when the click is also inside that row's viewport.
+            bool inContentVp = HitTest(_contentVpRt, mp);
+            bool inSidebarVp = HitTest(_sidebarVpRt, mp);
             foreach (var (rt, cb) in Clicks.Map)
             {
-                if (rt == null) continue;
-                if (HitTest(rt, mp)) { cb?.Invoke(); return; }
+                if (rt == null || !HitTest(rt, mp)) continue;
+                if (!inContentVp && _scrollContent != null && rt.IsChildOf(_scrollContent)) continue;
+                if (!inSidebarVp && _sidebarList != null && rt.IsChildOf(_sidebarList)) continue;
+                cb?.Invoke();
+                return;
             }
         }
 
@@ -1834,7 +2041,6 @@ namespace POGMods.Config
         {
             if (!_editingSearch) return;
             _editingSearch = false;
-            SliderEntry.AnyInputActive = false;
             if (_searchBgImg != null) _searchBgImg.color = new Color(0.16f, 0.16f, 0.18f, 0.95f);
             UpdateSearchTextDisplay();
         }
@@ -1844,9 +2050,8 @@ namespace POGMods.Config
             if (!_editingSearch) return;
             if (Input.GetKeyDown(KeyCode.Escape))
             {
-                EscConsumed = true;
+                ConsumeEsc();
                 _editingSearch = false;
-                SliderEntry.AnyInputActive = false;
                 _searchQuery = "";
                 if (_searchBgImg != null) _searchBgImg.color = new Color(0.16f, 0.16f, 0.18f, 0.95f);
                 UpdateSearchTextDisplay();
@@ -1996,7 +2201,7 @@ namespace POGMods.Config
 
                     Action onClick = () =>
                     {
-                        try { if (_panelOpen) DoClose(); else OpenPanel(); }
+                        try { if (POGConfig.PanelOpen) DoClose(); else OpenPanel(); }
                         catch (Exception ex)
                         { MelonLogger.Warning($"[POGConfig] MODS click: {ex.Message}"); }
                     };
@@ -2263,9 +2468,6 @@ namespace POGMods.Config
                 // (EnsureContent already rebuilt everything when alreadyBuilt is false.)
                 if (alreadyBuilt && _selectedMod == -1) RebuildContent();
                 if (_overlay != null) _overlay.SetActive(true);
-                _panelOpen = true;
-                PanelOpen = true;
-                POGConfig.PanelOpen = true;
 
                 // Block keyboard / gamepad submit on any underlying menu by clearing selection.
                 var es = UnityEngine.EventSystems.EventSystem.current;
@@ -2274,16 +2476,20 @@ namespace POGMods.Config
                     _savedSelected = es.currentSelectedGameObject;
                     es.SetSelectedGameObject(null);
                 }
+                POGConfig.SetPanelOpen(true);
             }
             else
             {
+                // Finish anything half-done before hiding: a value being typed is applied,
+                // a key listen is cancelled, the search box leaves edit mode. Otherwise the
+                // panel reopens still mid-edit (DONE and game-driven closes skip the
+                // per-row update that would normally end it).
+                EndAllInteractions();
+                if (_editingSearch) CommitSearchEdit();
+                CancelVanillaListen();
+
                 if (_overlay != null) _overlay.SetActive(false);
-                _panelOpen = false;
-                PanelOpen = false;
                 LastCloseFrame = Time.frameCount;
-                POGConfig.PanelOpen = false;
-                CancelVanillaListen(); // before AnyWaiting reset — it clears the flag itself
-                KeyEntry.AnyWaiting = false;
                 _scrollDragging = false;
                 _sidebarDragging = false;
 
@@ -2295,7 +2501,21 @@ namespace POGMods.Config
                         es.SetSelectedGameObject(_savedSelected);
                 }
                 _savedSelected = null;
+
+                Prefs.Flush();
+                POGConfig.SetPanelOpen(false);
             }
+        }
+
+        private static void EndAllInteractions()
+        {
+            foreach (var rec in POGConfig.GetAllRecords())
+                foreach (var e in rec.Entries)
+                {
+                    try { e.EndInteraction(); }
+                    catch (Exception ex)
+                    { MelonLogger.Warning($"[POGConfig] EndInteraction '{e.Label}': {ex.Message}"); }
+                }
         }
 
         // ── Build static UI ───────────────────────────────────────────────────
@@ -2453,6 +2673,7 @@ namespace POGMods.Config
             lvpRt.offsetMin = new Vector2(0, 0);
             lvpRt.offsetMax = new Vector2(0, -(SEARCH_H + SIDEBAR_PAD));
             listVp.AddComponent<RectMask2D>();
+            _sidebarVpRt = lvpRt;
 
             var listGo = UI.Make("List", listVp.transform);
             _sidebarListRt = UI.Rt(listGo);
@@ -2523,6 +2744,7 @@ namespace POGMods.Config
             vpRt.offsetMin = new Vector2(leftEdge, BOT_H);
             vpRt.offsetMax = new Vector2(-(16 + SB_W + 6), -(TOP_H + MOD_HDR_H));
             vpGo.AddComponent<RectMask2D>();
+            _contentVpRt = vpRt;
 
             var contentGo = UI.Make("ScrollContent", vpGo.transform);
             _scrollContentRt = UI.Rt(contentGo);
@@ -2595,6 +2817,9 @@ namespace POGMods.Config
 
             for (int i = _sidebarList.childCount - 1; i >= 0; i--)
                 UnityEngine.Object.Destroy(_sidebarList.GetChild(i).gameObject);
+            // Drop the destroyed items' clicks too; otherwise every search keystroke leaves
+            // another set of dead rects in Clicks.Map.
+            foreach (var oldRt in _sidebarItemRects.Values) Clicks.Unregister(oldRt);
             _sidebarItemRects.Clear();
             _sidebarItemBgs.Clear();
 
@@ -2683,11 +2908,9 @@ namespace POGMods.Config
         {
             if (_scrollContent == null) return;
 
-            // Clear any in-progress bind listening BEFORE destroying the rows it lived on.
-            // Otherwise switching tab/mod mid-listen leaves KeyEntry.AnyWaiting stuck true
-            // forever, and then NO slot (mod or vanilla) can start listening again. Mod
-            // KeyEntries self-heal on their next OnUpdate once AnyWaiting is false.
-            KeyEntry.AnyWaiting = false;
+            // End any in-progress edit or bind listening BEFORE destroying the rows it lived
+            // on: a value being typed is applied, a key listen is cancelled.
+            EndAllInteractions();
             _vListenRow = null;
             _vListenSlot = -1;
 
@@ -2757,17 +2980,8 @@ namespace POGMods.Config
                 var rdRow = UI.Make("R_RestoreDefaults", _scrollContent);
                 UI.PlaceFromTop(UI.Rt(rdRow), y, 30f);
 
-                var rdGo = UI.Make("Btn", rdRow.transform);
-                var rdRt = UI.Rt(rdGo);
-                rdRt.anchorMin = new Vector2(1f, 0.5f); rdRt.anchorMax = new Vector2(1f, 0.5f);
-                rdRt.pivot = new Vector2(1f, 0.5f);
-                rdRt.sizeDelta = new Vector2(170, 26);
-                rdRt.anchoredPosition = Vector2.zero;
-                UI.AddImage(rdGo, new Color(0.24f, 0.16f, 0.14f));
-                var rdTxtGo = UI.Make("Text", rdGo.transform);
-                UI.Stretch(UI.Rt(rdTxtGo));
-                UI.AddText(rdTxtGo, "RESTORE DEFAULTS", _font, 12,
-                           new Color(0.9f, 0.62f, 0.5f), TextAlignmentOptions.Center);
+                var rdRt = UI.AddButton(rdRow.transform, "RESTORE DEFAULTS", _font,
+                                        new Color(0.24f, 0.16f, 0.14f), new Color(0.9f, 0.62f, 0.5f));
                 var recCaptured = rec;
                 Clicks.Register(rdRt, () => RestoreModDefaults(recCaptured));
                 y += 32f;
@@ -2797,7 +3011,7 @@ namespace POGMods.Config
         {
             _vanillaRows.Clear();
             _vListenRow = null;
-            if (_vListenSlot >= 0) { _vListenSlot = -1; KeyEntry.AnyWaiting = false; }
+            _vListenSlot = -1;
 
             if (_modTitleTmp != null) _modTitleTmp.text = "Vanilla Binds";
             if (_modSubTmp != null)
@@ -2851,17 +3065,8 @@ namespace POGMods.Config
                 y += 10f;
                 var rdRow = UI.Make("R_RestoreDefaults", _scrollContent);
                 UI.PlaceFromTop(UI.Rt(rdRow), y, 30f);
-                var rdGo = UI.Make("Btn", rdRow.transform);
-                var rdRt = UI.Rt(rdGo);
-                rdRt.anchorMin = new Vector2(1f, 0.5f); rdRt.anchorMax = new Vector2(1f, 0.5f);
-                rdRt.pivot = new Vector2(1f, 0.5f);
-                rdRt.sizeDelta = new Vector2(170, 26);
-                rdRt.anchoredPosition = Vector2.zero;
-                UI.AddImage(rdGo, new Color(0.14f, 0.18f, 0.24f));
-                var rdTxtGo = UI.Make("Text", rdGo.transform);
-                UI.Stretch(UI.Rt(rdTxtGo));
-                UI.AddText(rdTxtGo, "RESTORE DEFAULTS", _font, 12,
-                           new Color(0.6f, 0.78f, 1f), TextAlignmentOptions.Center);
+                var rdRt = UI.AddButton(rdRow.transform, "RESTORE DEFAULTS", _font,
+                                        new Color(0.14f, 0.18f, 0.24f), new Color(0.6f, 0.78f, 1f));
                 Clicks.Register(rdRt, RestoreVanillaDefaults);
                 y += 32f;
 
@@ -2943,7 +3148,8 @@ namespace POGMods.Config
             _vListenRow = ui;
             _vListenSlot = slotIdx;
             _vListenFrame = Time.frameCount;
-            KeyEntry.AnyWaiting = true; // blocks Esc-close and mod KeyEntry listening
+            // _vListenSlot >= 0 now makes KeyEntry.AnyWaiting true, which blocks Esc-close
+            // and mod KeyEntry listening.
             if (ui.Texts[slotIdx] != null) ui.Texts[slotIdx].text = "…";
             if (ui.Bgs[slotIdx] != null) ui.Bgs[slotIdx].color = VListenBg;
         }
@@ -2954,7 +3160,6 @@ namespace POGMods.Config
             var row = _vListenRow;
             _vListenRow = null;
             _vListenSlot = -1;
-            KeyEntry.AnyWaiting = false;
             if (row != null) RefreshVanillaRowUI(row);
         }
 
@@ -2967,29 +3172,22 @@ namespace POGMods.Config
             if (_vListenSlot < 0 || _vListenRow == null) return;
 
             if (Input.GetKeyDown(KeyCode.Escape))
-            { EscConsumed = true; CancelVanillaListen(); return; }
+            { ConsumeEsc(); CancelVanillaListen(); return; }
 
             // Swallow the click that started listening (it would bind Mouse0 instantly).
             if (Time.frameCount == _vListenFrame) return;
 
             var row = _vListenRow;
             int slotIdx = _vListenSlot;
-            foreach (KeyCode kc in Enum.GetValues(typeof(KeyCode)))
-            {
-                if (kc == KeyCode.None || kc == KeyCode.Escape) continue;
-                bool isMouse = kc >= KeyCode.Mouse0 && kc <= KeyCode.Mouse6;
-                if (slotIdx < 2 ? isMouse : !isMouse) continue;
-                if (!Input.GetKeyDown(kc)) continue;
+            var kc = KeyCapture.PollDown(k => slotIdx < 2 ? !KeyCapture.IsMouse(k) : KeyCapture.IsMouse(k));
+            if (kc == KeyCode.None) return;
 
-                bool verified = VanillaBinds.TryWrite(row.Data, slotIdx, kc);
-                _vListenRow = null;
-                _vListenSlot = -1;
-                KeyEntry.AnyWaiting = false;
-                RefreshVanillaRowUI(row);
-                if (!verified)
-                    MelonLogger.Warning($"[POGConfig] Vanilla rebind '{row.Data.Action}' → {kc} not confirmed; showing actual state.");
-                return;
-            }
+            bool verified = VanillaBinds.TryWrite(row.Data, slotIdx, kc);
+            _vListenRow = null;
+            _vListenSlot = -1;
+            RefreshVanillaRowUI(row);
+            if (!verified)
+                MelonLogger.Warning($"[POGConfig] Vanilla rebind '{row.Data.Action}' → {kc} not confirmed; showing actual state.");
         }
 
         private void VanillaClear(VanillaRowUI ui, int slotIdx)

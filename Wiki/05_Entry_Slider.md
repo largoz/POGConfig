@@ -48,6 +48,8 @@ Runtime notes from implementation:
 
 - `originValue` is clamped into `[min, max]` before fill rendering.
 - `stepPointsCount` is sanitized to non-negative; points render only when count is `>= 2`.
+- Step points are sized in whole screen pixels (about 5 px at 1080p), so every dot renders
+  the same size at any resolution, and the end dots sit just inside the track.
 
 ## Column width tuning (`LabelFraction`, `ValueFraction`)
 

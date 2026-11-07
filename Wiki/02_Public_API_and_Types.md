@@ -26,6 +26,10 @@ public static void Register(string modName, List<ConfigEntry> entries, ModInfo i
 
 So avoid changing it after release unless you intentionally want a new prefs category.
 
+Calling `Register` again with a name that is already registered replaces that page
+(entries and `ModInfo`) instead of adding a second one, and reuses the existing preference
+keys. Defaults for RESTORE DEFAULTS are captured again from the values at that call.
+
 ## `PanelOpen`
 
 ```csharp
@@ -34,6 +38,22 @@ public static bool PanelOpen { get; }
 
 - `true` while MOD SETTINGS panel is open
 - use it to suppress your gameplay hotkeys during UI interaction
+
+## `PanelOpened` / `PanelClosed` (since 1.0.12)
+
+```csharp
+public static event Action PanelOpened;
+public static event Action PanelClosed;
+```
+
+- raised after the panel opens / closes, on the main thread
+- by the time `PanelClosed` fires, a value still being typed has been applied and pending
+  preference changes have been written
+- an exception in your handler is logged and does not stop other handlers
+
+```csharp
+POGConfig.PanelClosed += RebuildOverlay; // apply expensive settings once, not per change
+```
 
 ## Base type: `ConfigEntry`
 
@@ -51,6 +71,7 @@ You usually instantiate concrete entries only.
 - `SliderEntry`
 - `OptionsSliderEntry`
 - `KeyEntry`
+- `ButtonEntry` (since 1.0.12)
 
 ## `HeaderEntry` (section label row)
 
@@ -65,6 +86,20 @@ It has:
 - no value
 - no callbacks
 - no persistence
+
+## `ButtonEntry` (action row, since 1.0.12)
+
+```csharp
+new ButtonEntry(string label, string buttonText, Action onClick)
+```
+
+```csharp
+new ButtonEntry("Statistics", "RESET", () => _stats.Clear())
+```
+
+- runs `onClick` when the button is pressed
+- no value, no persistence; RESTORE DEFAULTS skips it
+- an exception thrown by `onClick` is logged as a warning, not rethrown
 
 ## `ModInfo` metadata
 

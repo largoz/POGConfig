@@ -57,7 +57,8 @@ When `prefKey` is provided, `ToggleEntry` does this on bind:
 
 - creates a preference entry with current value as default
 - immediately applies loaded preference value to runtime via `set(pref.Value)`
-- wraps future `set` calls to auto-save with `MelonPreferences.Save()`
+- wraps future `set` calls so each change is saved (written half a second after the last
+  change, on panel close and on game quit)
 
 ## Good usage patterns
 

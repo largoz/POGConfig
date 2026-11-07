@@ -10,10 +10,13 @@ Instead of building your own menu UI, you define entries and callbacks, and `POG
 - A shared settings panel for multiple mods, opened from a **MODS** button injected
   natively into both the main menu and the in-game pause menu.
 - Standardized setting entry types:
+  - section header
   - toggle
   - slider
   - options slider
   - keybind (up to 3 universal keyboard/mouse slots)
+  - button (runs an action)
+- `PanelOpened` / `PanelClosed` events for settings that are expensive to apply.
 - Built-in runtime update flow for entry values.
 - Optional persistence through `MelonPreferences` via `prefKey`.
 - A **RESTORE DEFAULTS** button on every mod page (resets that mod to its registered
@@ -47,10 +50,12 @@ Each entry provides:
 
 - `ConfigEntry` is the abstract base type.
 - Concrete entry types inherit from it:
+  - `HeaderEntry`
   - `ToggleEntry`
   - `SliderEntry`
   - `OptionsSliderEntry`
   - `KeyEntry`
+  - `ButtonEntry`
 
 These are classes, not just visual labels.  
 Each class contains behavior for rendering, value updates, and user interaction.
