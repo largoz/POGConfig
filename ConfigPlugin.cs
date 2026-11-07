@@ -998,6 +998,54 @@ namespace POGMods.Config
         }
     }
 
+    // ── MODS button label ─────────────────────────────────────────────────────
+    // The game's own menu buttons are translated by I2 Localization; ours is not a game term
+    // (its Localize components are stripped, see InjectModsClone), so it is translated here.
+
+    internal static class ModsLabel
+    {
+        // Keys are the language names in this game's only I2 source (measured 2026-07-30: 11
+        // languages). A language not listed here, or a failed lookup, shows the English label.
+        private static readonly Dictionary<string, string> ByLanguage = new Dictionary<string, string>
+        {
+            ["English"] = "MODS",
+            ["French"] = "MODS",
+            ["Italian"] = "MOD",
+            ["German"] = "MODS",
+            ["Spanish"] = "MODS",
+            ["Japanese"] = "MOD",
+            ["Simplified Chinese"] = "模组",
+            ["Ukrainian"] = "МОДИ",
+            ["Russian"] = "МОДЫ",
+            ["Swedish"] = "MODDAR",
+            ["Goblin"] = "GOBBO HACKS", // in the spirit of "Gobbo Tweak Box" (Settings) and "Scarper" (Quit)
+        };
+        private const string Fallback = "MODS";
+        private const float RecheckSeconds = 0.5f; // read every frame while a menu is open; the lookup is throttled
+
+        private static string _language;
+        private static string _text = Fallback;
+        private static float _nextCheck;
+
+        public static string Current
+        {
+            get
+            {
+                if (Time.unscaledTime < _nextCheck) return _text;
+                _nextCheck = Time.unscaledTime + RecheckSeconds;
+                string lang = null;
+                try { lang = Il2CppI2.Loc.LocalizationManager.CurrentLanguage; } catch { }
+                if (lang != _language)
+                {
+                    _language = lang;
+                    _text = lang != null && ByLanguage.TryGetValue(lang, out var t) ? t : Fallback;
+                    MelonLogger.Msg($"[POGConfig] MODS button label for '{lang ?? "?"}': {_text}");
+                }
+                return _text;
+            }
+        }
+    }
+
     // ── Preferences ───────────────────────────────────────────────────────────
     // MelonPreferences.Save() rewrites the whole preferences file. Changes are marked
     // dirty here and written once input settles (and on panel close / game quit),
@@ -1473,7 +1521,7 @@ namespace POGMods.Config
 
     public class PogConfigMelon : MelonMod
     {
-        public const string VERSION = "1.0.12";
+        public const string VERSION = "1.0.13";
 
         public override void OnInitializeMelon()
         {
@@ -1567,6 +1615,7 @@ namespace POGMods.Config
 
         // ── Floating MODS button (pause-menu FALLBACK if native injection fails) ─
         private RectTransform _modsBtnRt;
+        private TMP_Text _modsBtnText;
         private RectTransform _doneBtnRt;
         private GameObject    _overlay;
         private Image         _modsBtnImg;
@@ -1702,7 +1751,12 @@ namespace POGMods.Config
                 if (_modsBtnRt != null)
                 {
                     _modsBtnRt.gameObject.SetActive(showFloating);
-                    if (showFloating) { PositionModsButton(); UpdateModsButtonHover(); }
+                    if (showFloating)
+                    {
+                        PositionModsButton();
+                        UpdateModsButtonHover();
+                        if (_modsBtnText != null && _modsBtnText.text != ModsLabel.Current) _modsBtnText.text = ModsLabel.Current;
+                    }
                     else if (_modsBtnImg != null) _modsBtnImg.color = new Color(0, 0, 0, 0);
                 }
 
@@ -2127,7 +2181,9 @@ namespace POGMods.Config
             if (buttonGo == null) return;
             var nmb = buttonGo.GetComponent<NetworkMenuButton>();
             var text = nmb != null ? nmb.m_buttonText : null;
-            if (text != null && text.text != "MODS") text.text = "MODS";
+            if (text == null) return;
+            string want = ModsLabel.Current;
+            if (text.text != want) text.text = want;
         }
 
         private void EnsureMainMenuModsBtn()
@@ -2194,7 +2250,7 @@ namespace POGMods.Config
                 if (nmb.m_menu == null)
                     nmb.m_menu = template.m_menu != null ? template.m_menu : NetworkMenu.Instance;
 
-                if (nmb.m_buttonText != null) nmb.m_buttonText.text = "MODS";
+                if (nmb.m_buttonText != null) nmb.m_buttonText.text = ModsLabel.Current;
 
                 var btn = nmb.m_button;
                 if (btn != null)
@@ -2586,8 +2642,9 @@ namespace POGMods.Config
             _modsBtnImg = UI.AddImage(go, new Color(0, 0, 0, 0));
             var textGo = UI.Make("Text", go.transform);
             UI.Stretch(UI.Rt(textGo));
-            var txt = UI.AddText(textGo, "MODS", _font, 20, Color.white, TextAlignmentOptions.Center);
+            var txt = UI.AddText(textGo, ModsLabel.Current, _font, 20, Color.white, TextAlignmentOptions.Center);
             txt.fontStyle = FontStyles.Bold;
+            _modsBtnText = txt;
             return go;
         }
 
