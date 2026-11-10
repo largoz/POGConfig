@@ -1661,13 +1661,16 @@ namespace POGMods.Config
         private const float PANEL_H    = 650f;
         private const float TOP_H      = 68f;
         private const float BOT_H      = 24f;
-        private const float SB_W       = 14f;
+        private const float SB_W       = 8f;
         private const float SIDEBAR_W  = 220f;
         private const float SIDEBAR_PAD= 8f;
         private const float SEARCH_H   = 32f;
-        private const float MOD_HDR_H  = 56f; // mod info header in content area
-        private const float VIEWPORT_H = PANEL_H - TOP_H - BOT_H - MOD_HDR_H;
-        private const float SIDEBAR_LIST_H = PANEL_H - TOP_H - BOT_H - SEARCH_H - SIDEBAR_PAD * 2;
+        private const float MOD_HDR_H  = 56f; // mod info header in content area: its smallest height
+        private const float SIDE_TOP   = TOP_H + 4f; // sidebar and separator start below the title bar
+        private const float SIDEBAR_LIST_H = PANEL_H - SIDE_TOP - BOT_H - SEARCH_H - SIDEBAR_PAD;
+        // The mod header grows with a wrapped description, and the rows' viewport shrinks with it.
+        private float _modHdrH = MOD_HDR_H;
+        private float ViewportH => PANEL_H - TOP_H - BOT_H - _modHdrH;
         private const float SCROLL_SPD = 40f;
 
         private bool _isPause, _isMainMenu;
@@ -1717,6 +1720,7 @@ namespace POGMods.Config
         private RectTransform _contentHeaderRt;
         private TextMeshProUGUI _modTitleTmp;
         private TextMeshProUGUI _modSubTmp;
+        private TextMeshProUGUI _modDescTmp;
 
         private int _selectedMod = 0;
         private readonly Dictionary<int, RectTransform> _sidebarItemRects = new();
@@ -1887,7 +1891,7 @@ namespace POGMods.Config
             float wheel = Input.mouseScrollDelta.y;
             Vector2 mp = Input.mousePosition;
 
-            float contentMax = Mathf.Max(0, _totalContentH - VIEWPORT_H);
+            float contentMax = Mathf.Max(0, _totalContentH - ViewportH);
             float sidebarMax = Mathf.Max(0, _sidebarTotalH - SIDEBAR_LIST_H);
 
             // Strict cursor-over-section gating so wheel scrolls only the panel under the cursor.
@@ -1944,8 +1948,8 @@ namespace POGMods.Config
         {
             if (_scrollThumbRt == null || _totalContentH <= 0) return;
             float ratio   = maxScroll > 0 ? _scrollOffset / maxScroll : 0f;
-            float thumbH  = Mathf.Max(30f, VIEWPORT_H * VIEWPORT_H / _totalContentH);
-            float thumbY  = -ratio * (VIEWPORT_H - thumbH);
+            float thumbH  = Mathf.Max(30f, ViewportH * ViewportH / _totalContentH);
+            float thumbY  = -ratio * (ViewportH - thumbH);
             _scrollThumbRt.sizeDelta        = new Vector2(0, thumbH);
             _scrollThumbRt.anchoredPosition = new Vector2(0, thumbY);
         }
@@ -2078,7 +2082,7 @@ namespace POGMods.Config
         private void JumpScrollToCursor(Vector2 mp)
         {
             if (_scrollTrackRt == null || _scrollThumbRt == null) return;
-            float maxScroll = Mathf.Max(0, _totalContentH - VIEWPORT_H);
+            float maxScroll = Mathf.Max(0, _totalContentH - ViewportH);
             if (maxScroll <= 0) return;
             var tc = GetCorners(_scrollTrackRt);
             float trackTop = tc[1].y;
@@ -2130,7 +2134,7 @@ namespace POGMods.Config
         private void DragScrollThumb()
         {
             if (_scrollTrackRt == null || _scrollThumbRt == null) { _scrollDragging = false; return; }
-            float maxScroll = Mathf.Max(0, _totalContentH - VIEWPORT_H);
+            float maxScroll = Mathf.Max(0, _totalContentH - ViewportH);
             if (maxScroll <= 0) return;
             var tc = GetCorners(_scrollTrackRt);
             float trackTop = tc[1].y;
@@ -2767,8 +2771,8 @@ namespace POGMods.Config
             var vRt = UI.Rt(vSepGo);
             vRt.anchorMin = new Vector2(0, 0); vRt.anchorMax = new Vector2(0, 1);
             vRt.pivot = new Vector2(0, 0.5f);
-            vRt.sizeDelta = new Vector2(1, -(TOP_H + BOT_H));
-            vRt.anchoredPosition = new Vector2(SIDEBAR_W + 16f, 0);
+            vRt.offsetMin = new Vector2(16f + SIDEBAR_W + 8f, BOT_H);
+            vRt.offsetMax = new Vector2(16f + SIDEBAR_W + 9f, -SIDE_TOP);
             UI.AddImage(vSepGo, new Color(1, 1, 1, 0.10f), false);
 
             // ── Content area (right) ──
@@ -2801,10 +2805,12 @@ namespace POGMods.Config
             // Sidebar root (left strip below title)
             var sb = UI.Make("Sidebar", panelTr);
             var sbRt = UI.Rt(sb);
+            // Explicit insets: a box centred with sizeDelta -(TOP_H + BOT_H) started 46 units from
+            // the top instead of TOP_H, over the title bar's separator.
             sbRt.anchorMin = new Vector2(0, 0); sbRt.anchorMax = new Vector2(0, 1);
-            sbRt.pivot = new Vector2(0, 0.5f);
-            sbRt.sizeDelta = new Vector2(SIDEBAR_W, -(TOP_H + BOT_H));
-            sbRt.anchoredPosition = new Vector2(16f, 0);
+            sbRt.pivot = new Vector2(0, 1);
+            sbRt.offsetMin = new Vector2(16f, BOT_H);
+            sbRt.offsetMax = new Vector2(16f + SIDEBAR_W, -SIDE_TOP);
 
             // Search box background
             var searchGo = UI.Make("Search", sb.transform);
@@ -2879,16 +2885,51 @@ namespace POGMods.Config
                                        TextAlignmentOptions.TopLeft);
             _modTitleTmp.fontStyle = FontStyles.Bold;
 
+            // Version and author on one line, the description under it, wrapped.
             var subGo = UI.Make("ModSub", hdr.transform);
             var sRt = UI.Rt(subGo);
             sRt.anchorMin = new Vector2(0, 1); sRt.anchorMax = new Vector2(1, 1);
             sRt.pivot = new Vector2(0, 1);
-            sRt.sizeDelta = new Vector2(0, 22);
-            sRt.anchoredPosition = new Vector2(0, -28);
+            sRt.sizeDelta = new Vector2(0, 18);
+            sRt.anchoredPosition = new Vector2(0, -30);
             _modSubTmp = UI.AddText(subGo, "", _font, 12,
-                                    new Color(0.7f, 0.7f, 0.72f), TextAlignmentOptions.TopLeft);
+                                    new Color(0.55f, 0.55f, 0.6f), TextAlignmentOptions.TopLeft);
             _modSubTmp.enableWordWrapping = false;
             _modSubTmp.overflowMode = TextOverflowModes.Ellipsis;
+
+            var descGo = UI.Make("ModDesc", hdr.transform);
+            var dRt = UI.Rt(descGo);
+            dRt.anchorMin = Vector2.zero; dRt.anchorMax = Vector2.one;
+            dRt.offsetMin = new Vector2(0, 4); dRt.offsetMax = new Vector2(0, -50);
+            _modDescTmp = UI.AddText(descGo, "", _font, 13,
+                                     new Color(0.78f, 0.78f, 0.8f), TextAlignmentOptions.TopLeft);
+            _modDescTmp.enableWordWrapping = true;
+            _modDescTmp.overflowMode = TextOverflowModes.Ellipsis;
+        }
+
+        // Most lines of description the header shows before cutting it off.
+        private const int HDR_DESC_MAX_LINES = 4;
+
+        /// <summary>Fills the mod header and resizes it (and the rows' viewport) to fit the description.</summary>
+        private void SetModHeader(string title, string meta, string description)
+        {
+            if (_modTitleTmp != null) _modTitleTmp.text = title ?? "";
+            if (_modSubTmp != null) _modSubTmp.text = meta ?? "";
+            float descH = 0f;
+            if (_modDescTmp != null)
+            {
+                _modDescTmp.text = description ?? "";
+                if (!string.IsNullOrEmpty(description) && _contentHeaderRt != null)
+                {
+                    float width = Mathf.Max(100f, _contentHeaderRt.rect.width);
+                    float line = _modDescTmp.GetPreferredValues("Ag", width, 0f).y;
+                    descH = Mathf.Min(_modDescTmp.GetPreferredValues(description, width, 0f).y, line * HDR_DESC_MAX_LINES + 2f);
+                }
+            }
+            _modHdrH = Mathf.Max(MOD_HDR_H, 50f + descH + 10f);
+            if (_contentHeaderRt != null) _contentHeaderRt.offsetMin = new Vector2(_contentHeaderRt.offsetMin.x, -(TOP_H + _modHdrH));
+            if (_contentVpRt != null) _contentVpRt.offsetMax = new Vector2(_contentVpRt.offsetMax.x, -(TOP_H + _modHdrH));
+            if (_scrollTrackRt != null) _scrollTrackRt.offsetMax = new Vector2(_scrollTrackRt.offsetMax.x, -(TOP_H + _modHdrH));
         }
 
         private void BuildViewport(Transform panelTr)
@@ -2932,7 +2973,7 @@ namespace POGMods.Config
             _scrollThumbRt.offsetMax = new Vector2(-2, 0);
             _scrollThumbRt.sizeDelta = new Vector2(-4, 40);
             _scrollThumbRt.anchoredPosition = Vector2.zero;
-            UI.AddImage(thumbGo, new Color(0.45f, 0.45f, 0.5f));
+            UI.AddImage(thumbGo, new Color(0.34f, 0.34f, 0.38f));
 
             _scrollbarGo.SetActive(false);
         }
@@ -3089,8 +3130,7 @@ namespace POGMods.Config
             var mods = POGConfig.GetAllRecords();
             if (mods.Count == 0)
             {
-                if (_modTitleTmp != null) _modTitleTmp.text = "No mods registered";
-                if (_modSubTmp != null) _modSubTmp.text = "Install a POGConfig-aware mod to see settings here.";
+                SetModHeader("No mods registered", "", "Install a POGConfig-aware mod to see settings here.");
                 _totalContentH = 0;
                 if (_scrollContentRt != null) _scrollContentRt.sizeDelta = new Vector2(0, 0);
                 if (_scrollbarGo != null) _scrollbarGo.SetActive(false);
@@ -3098,18 +3138,14 @@ namespace POGMods.Config
             }
 
             var rec = mods[_selectedMod];
-            if (_modTitleTmp != null) _modTitleTmp.text = rec.Name;
-            if (_modSubTmp != null)
             {
-                string sub = "";
+                string meta = "";
                 if (rec.Info != null)
                 {
-                    if (!string.IsNullOrEmpty(rec.Info.Version)) sub += "v" + rec.Info.Version;
-                    if (!string.IsNullOrEmpty(rec.Info.Author))  sub += (sub.Length > 0 ? "  ·  " : "") + "by " + rec.Info.Author;
-                    if (!string.IsNullOrEmpty(rec.Info.Description))
-                        sub += (sub.Length > 0 ? "  ·  " : "") + rec.Info.Description;
+                    if (!string.IsNullOrEmpty(rec.Info.Version)) meta += "v" + rec.Info.Version;
+                    if (!string.IsNullOrEmpty(rec.Info.Author))  meta += (meta.Length > 0 ? "  ·  " : "") + "by " + rec.Info.Author;
                 }
-                _modSubTmp.text = sub;
+                SetModHeader(rec.Name, meta, rec.Info?.Description);
             }
 
             const float ROW_H = 40f;
@@ -3157,10 +3193,10 @@ namespace POGMods.Config
                 // mod's scroll offset persists and items hide above the viewport.
                 _scrollContentRt.anchoredPosition = Vector2.zero;
             }
-            bool needsScroll = _totalContentH > VIEWPORT_H;
+            bool needsScroll = _totalContentH > ViewportH;
             if (_scrollbarGo != null) _scrollbarGo.SetActive(needsScroll);
             // Reset scrollbar thumb visual to top.
-            if (needsScroll) UpdateScrollThumb(Mathf.Max(0, _totalContentH - VIEWPORT_H));
+            if (needsScroll) UpdateScrollThumb(Mathf.Max(0, _totalContentH - ViewportH));
             // Cancel any in-progress drag from the previous mod's content.
             _scrollDragging = false;
         }
@@ -3174,9 +3210,8 @@ namespace POGMods.Config
             _vListenRow = null;
             _vListenSlot = -1;
 
-            if (_modTitleTmp != null) _modTitleTmp.text = "Vanilla Binds";
-            if (_modSubTmp != null)
-                _modSubTmp.text = "The game's own controls. Click a slot to rebind — changes apply to the vanilla settings directly.";
+            SetModHeader("Vanilla Binds", "",
+                "The game's own controls. Click a slot to rebind — changes apply to the vanilla settings directly.");
 
             var rows = VanillaBinds.TryRead();
             if (rows == null || rows.Count == 0)
@@ -3240,9 +3275,9 @@ namespace POGMods.Config
                 _scrollContentRt.sizeDelta = new Vector2(0, _totalContentH);
                 _scrollContentRt.anchoredPosition = Vector2.zero;
             }
-            bool needsScroll = _totalContentH > VIEWPORT_H;
+            bool needsScroll = _totalContentH > ViewportH;
             if (_scrollbarGo != null) _scrollbarGo.SetActive(needsScroll);
-            if (needsScroll) UpdateScrollThumb(Mathf.Max(0, _totalContentH - VIEWPORT_H));
+            if (needsScroll) UpdateScrollThumb(Mathf.Max(0, _totalContentH - ViewportH));
             _scrollDragging = false;
         }
 
