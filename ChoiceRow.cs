@@ -92,7 +92,19 @@ namespace POGMods.Config
 
         // ── Row ─────────────────────────────────────────────────────────────
 
+        // Label and button share the top line; a description spans the whole row under them and
+        // wraps onto as many lines as it needs (MeasureHeight grows the row to fit).
+        private const float TopLine = 36f;
+        private TextMeshProUGUI _descTmp;
+
         public override float Height => string.IsNullOrEmpty(_description) ? 40f : 56f;
+
+        internal override float MeasureHeight(float width, float placedHeight)
+        {
+            if (_descTmp == null) return placedHeight;
+            float h = _descTmp.GetPreferredValues(_description, Mathf.Max(50f, width - 4f), 0f).y;
+            return Mathf.Max(placedHeight, TopLine + h + 6f);
+        }
 
         internal IReadOnlyList<Option> CurrentOptions()
         {
@@ -124,9 +136,17 @@ namespace POGMods.Config
             bool hasDesc = !string.IsNullOrEmpty(_description);
             var lbl = UI.Make("Label", row.transform);
             var lRt = UI.Rt(lbl);
-            lRt.anchorMin = new Vector2(0f, hasDesc ? 0.42f : 0f);
-            lRt.anchorMax = new Vector2(0.46f, 1f);
-            lRt.offsetMin = lRt.offsetMax = Vector2.zero;
+            if (hasDesc)
+            {
+                lRt.anchorMin = new Vector2(0f, 1f); lRt.anchorMax = new Vector2(0.46f, 1f);
+                lRt.pivot = new Vector2(0f, 1f);
+                lRt.offsetMin = new Vector2(0f, -TopLine); lRt.offsetMax = Vector2.zero;
+            }
+            else
+            {
+                lRt.anchorMin = Vector2.zero; lRt.anchorMax = new Vector2(0.46f, 1f);
+                lRt.offsetMin = lRt.offsetMax = Vector2.zero;
+            }
             var lTmp = UI.AddText(lbl, Label, font, (int)Theme.Defaults["font-size-label"], new Color(0.88f, 0.88f, 0.88f));
             lTmp.enableWordWrapping = false;
             lTmp.overflowMode = TextOverflowModes.Ellipsis;
@@ -135,22 +155,31 @@ namespace POGMods.Config
             {
                 var d = UI.Make("Description", row.transform);
                 var dRt = UI.Rt(d);
-                dRt.anchorMin = new Vector2(0f, 0f);
-                dRt.anchorMax = new Vector2(0.46f, 0.44f);
-                dRt.offsetMin = dRt.offsetMax = Vector2.zero;
-                var dTmp = UI.AddText(d, _description, font, (int)Theme.Defaults["font-size-small"], new Color(0.6f, 0.6f, 0.64f),
+                dRt.anchorMin = Vector2.zero; dRt.anchorMax = Vector2.one;
+                dRt.offsetMin = new Vector2(0f, 2f); dRt.offsetMax = new Vector2(-4f, -TopLine);
+                _descTmp = UI.AddText(d, _description, font, (int)Theme.Defaults["font-size-small"], new Color(0.6f, 0.6f, 0.64f),
                                       TextAlignmentOptions.TopLeft);
-                dTmp.enableWordWrapping = false;
-                dTmp.overflowMode = TextOverflowModes.Ellipsis;
+                _descTmp.enableWordWrapping = true;
+                _descTmp.overflowMode = TextOverflowModes.Overflow;
             }
 
             var btn = UI.Make("Choice", row.transform);
             _buttonRt = UI.Rt(btn);
-            _buttonRt.anchorMin = new Vector2(0.48f, 0.5f);
-            _buttonRt.anchorMax = new Vector2(1f, 0.5f);
-            _buttonRt.pivot = new Vector2(0.5f, 0.5f);
-            _buttonRt.sizeDelta = new Vector2(0f, 28f);
-            _buttonRt.anchoredPosition = Vector2.zero;
+            if (hasDesc)
+            {
+                // Centred on the top line, with the label.
+                _buttonRt.anchorMin = new Vector2(0.48f, 1f); _buttonRt.anchorMax = new Vector2(1f, 1f);
+                _buttonRt.pivot = new Vector2(0.5f, 0.5f);
+                _buttonRt.sizeDelta = new Vector2(0f, 28f);
+                _buttonRt.anchoredPosition = new Vector2(0f, -TopLine * 0.5f);
+            }
+            else
+            {
+                _buttonRt.anchorMin = new Vector2(0.48f, 0.5f); _buttonRt.anchorMax = new Vector2(1f, 0.5f);
+                _buttonRt.pivot = new Vector2(0.5f, 0.5f);
+                _buttonRt.sizeDelta = new Vector2(0f, 28f);
+                _buttonRt.anchoredPosition = Vector2.zero;
+            }
             UI.AddImage(btn, new Color(0.16f, 0.16f, 0.18f, 0.95f));
 
             var vGo = UI.Make("Value", btn.transform);

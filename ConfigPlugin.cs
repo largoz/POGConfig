@@ -121,6 +121,10 @@ namespace POGMods.Config
         public virtual void Draw(float x, float y, float width, GUIStyle labelStyle) { }
         public virtual float Height => 36f;
 
+        // The row's height once it is built and its width is known (wrapped text grows it).
+        // Called right after BuildRowInto; the default keeps the height the row was placed with.
+        internal virtual float MeasureHeight(float width, float placedHeight) => placedHeight;
+
         internal abstract void BuildRowInto(GameObject row, TMP_FontAsset font);
         internal virtual void BuildRow(Transform parent, TMP_FontAsset font) { }
         internal virtual void OnUpdate() { }
@@ -3120,6 +3124,10 @@ namespace POGMods.Config
                     var row = UI.Make("R_" + (entry.Label ?? "?"), _scrollContent);
                     UI.PlaceFromTop(UI.Rt(row), y, h);
                     entry.BuildRowInto(row, _font);
+                    float width = _scrollContentRt != null && _scrollContentRt.rect.width > 1f
+                        ? _scrollContentRt.rect.width : PANEL_W - SIDEBAR_W - 80f;
+                    float measured = entry.MeasureHeight(width, h);
+                    if (Math.Abs(measured - h) > 0.5f) { h = measured; UI.PlaceFromTop(UI.Rt(row), y, h); }
                 }
                 catch (Exception ex)
                 { MelonLogger.Warning($"[POGConfig] Row '{entry.Label}': {ex.Message}"); }
