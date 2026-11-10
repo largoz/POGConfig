@@ -278,10 +278,13 @@ namespace POGMods.Config
 
         public bool IsOpen => _root != null && _root.activeSelf;
 
-        public ChoicePopup(Transform panel, TMP_FontAsset font, float panelHeight)
+        /// <param name="boxHeight">height of the list box</param>
+        /// <param name="centerY">vertical offset of its centre from the panel's centre (negative = lower),
+        /// so it can sit under the panel's title bar instead of over it</param>
+        public ChoicePopup(Transform panel, TMP_FontAsset font, float boxHeight, float centerY)
         {
             _font = font;
-            _boxH = Mathf.Max(240f, panelHeight - 70f);
+            _boxH = Mathf.Max(240f, boxHeight);
 
             _root = UI.Make("ChoicePopup", panel);
             UI.Stretch(UI.Rt(_root));
@@ -291,6 +294,7 @@ namespace POGMods.Config
             _boxRt = UI.Rt(box);
             _boxRt.anchorMin = _boxRt.anchorMax = new Vector2(0.5f, 0.5f);
             _boxRt.sizeDelta = new Vector2(BoxW, _boxH);
+            _boxRt.anchoredPosition = new Vector2(0f, centerY);
             UI.AddImage(box, new Color(0.085f, 0.085f, 0.1f, 1f));
             var edge = UI.Make("Edge", box.transform);
             UI.PlaceFromTop(UI.Rt(edge), 0f, 2f);

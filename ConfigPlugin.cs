@@ -2795,7 +2795,8 @@ namespace POGMods.Config
             doneTxt.fontStyle = FontStyles.Bold;
 
             // Last child: drawn over everything else in the panel.
-            _popup = new ChoicePopup(panelGo.transform, _font, PANEL_H);
+            // Under the title bar, over the sidebar and the rows.
+            _popup = new ChoicePopup(panelGo.transform, _font, PANEL_H - TOP_H - BOT_H - 12f, -(TOP_H - BOT_H) * 0.5f);
 
             return overlayGo;
         }
