@@ -1628,6 +1628,11 @@ namespace POGMods.Config
         // Read by SliderEntry.AnyInputActive / KeyEntry.AnyWaiting, which are derived from
         // the actual edit and listen state rather than stored separately.
         internal static bool SearchEditing => _instance != null && _instance._editingSearch;
+
+        // The list a ChoiceRow opens. While it is open it takes all input (clicks, wheel, keys).
+        private ChoicePopup _popup;
+        internal static ChoicePopup Popup => _instance != null ? _instance._popup : null;
+        private static bool PopupOpen => Popup != null && Popup.IsOpen;
         internal static bool VanillaListening => _instance != null && _instance._vListenSlot >= 0;
 
         // Any handler that reacts to Escape (cancel search edit, value edit, key binding)
@@ -1643,7 +1648,7 @@ namespace POGMods.Config
         // cancelling something inside it: a key listen, a value edit or the search box.
         internal static void OnGameCancel()
         {
-            if (EscConsumed || KeyEntry.AnyWaiting || SliderEntry.AnyInputActive) return;
+            if (EscConsumed || KeyEntry.AnyWaiting || SliderEntry.AnyInputActive || PopupOpen) return;
             RequestClose();
         }
 
@@ -1824,7 +1829,8 @@ namespace POGMods.Config
                 bool inMenu = _isPause || _isMainMenu || isOurState;
                 if (!inMenu && POGConfig.PanelOpen) DoClose();
 
-                HandleClicks();
+                bool popupOpen = PopupOpen;
+                if (!popupOpen) HandleClicks();
 
                 if (POGConfig.PanelOpen)
                 {
@@ -1834,10 +1840,14 @@ namespace POGMods.Config
                     if (es != null && es.currentSelectedGameObject != null)
                         es.SetSelectedGameObject(null);
 
-                    UpdateThumbDrag();
-                    HandleScroll();
-                    HandleSearchInput();
-                    UpdateVanillaListen();
+                    if (popupOpen) Popup.Tick();
+                    else
+                    {
+                        UpdateThumbDrag();
+                        HandleScroll();
+                        HandleSearchInput();
+                        UpdateVanillaListen();
+                    }
                     // Only the page on screen has rows to sync. Pages switched away from
                     // had their interactions ended when the content was rebuilt.
                     var mods = POGConfig.GetAllRecords();
@@ -1847,7 +1857,7 @@ namespace POGMods.Config
 
                     // Esc closes the panel — but only if no handler above already used
                     // this press to cancel an edit/binding (EscConsumed).
-                    if (!_editingSearch && !KeyEntry.AnyWaiting && !EscConsumed
+                    if (!popupOpen && !_editingSearch && !KeyEntry.AnyWaiting && !EscConsumed
                         && Input.GetKeyDown(KeyCode.Escape))
                         DoClose();
                 }
@@ -2644,6 +2654,7 @@ namespace POGMods.Config
 
         private static void EndAllInteractions()
         {
+            Popup?.Close();
             foreach (var rec in POGConfig.GetAllRecords())
                 foreach (var e in rec.Entries)
                 {
@@ -2774,6 +2785,9 @@ namespace POGMods.Config
             var doneTxt = UI.AddText(doneTxtGo, "DONE", _font, 15,
                                      new Color(0.08f, 0.04f, 0f), TextAlignmentOptions.Center);
             doneTxt.fontStyle = FontStyles.Bold;
+
+            // Last child: drawn over everything else in the panel.
+            _popup = new ChoicePopup(panelGo.transform, _font, PANEL_H);
 
             return overlayGo;
         }
@@ -3099,7 +3113,8 @@ namespace POGMods.Config
             for (int j = 0; j < rec.Entries.Count; j++)
             {
                 var entry = rec.Entries[j];
-                float h = entry is HeaderEntry ? entry.Height : ROW_H;
+                // Rows are at least ROW_H; a row may ask for more (ChoiceRow with a description).
+                float h = entry is HeaderEntry ? entry.Height : Math.Max(ROW_H, entry.Height);
                 try
                 {
                     var row = UI.Make("R_" + (entry.Label ?? "?"), _scrollContent);
