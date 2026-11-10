@@ -17,7 +17,9 @@ Mods that support POG Config add their settings to this panel, so you get one pl
 - **VANILLA BINDS** tab: the game's own controls, editable. Each action has two keyboard slots and one mouse slot, exactly like the game's Controls screen. Changes go straight into the game's settings.
 - **RESTORE DEFAULTS** on every page, including the vanilla binds.
 - Settings are saved automatically.
-- `Esc` cancels what you are doing (typing a value, waiting for a key) and otherwise closes the panel.
+- `Esc` cancels what you are doing (typing a value, waiting for a key, an open list) and otherwise closes the panel.
+- Settings with many choices open a **list** with search and filter buttons. Type to search; arrows, Enter and Esc work too.
+- **Bigger panel and text.** To make it bigger or smaller, set `UIScale` under `[POG_Config]` in `UserData/MelonPreferences.cfg` (1.35 by default, 0.75 to 2; 1 is the size before 1.1.0). It applies at once.
 
 ---
 
@@ -79,6 +81,7 @@ private static void TryRegisterConfig()
 | `ToggleEntry(label, get, set[, prefKey])` | A checkbox. |
 | `SliderEntry(label, get, set, min, max[, fmt, prefKey, originValue, showFill, wholeNumbers, stepPointsCount])` | A slider with a value box you can type into. |
 | `OptionsSliderEntry(label, get, set, options[, prefKey])` | A slider that picks one of several named options. |
+| `ChoiceRow(label, get, set, options…)` | A choice from a list that opens over the page, with search and filters. New in 1.1.0. |
 | `KeyEntry(label, get, set[, prefKey])` | One key bind slot. |
 | `KeyEntry(label, get(slot), set(slot, key), prefKey, slotCount)` | Up to 3 key bind slots. |
 | `ButtonEntry(label, buttonText, onClick)` | A button that runs an action. New in 1.0.12. |
@@ -133,6 +136,29 @@ new KeyEntry("Fire", slot => _fire[slot], (slot, v) => _fire[slot] = v, "Fire", 
 - Every slot accepts keyboard keys and mouse buttons. Set `{ AllowMouseButtons = false }` for a keyboard-only entry.
 - Slot 1 is saved under `prefKey`, slots 2 and 3 under `prefKey_2` and `prefKey_3`.
 - Treat `KeyCode.None` as "no hotkey": `if (_toggleKey != KeyCode.None && Input.GetKeyDown(_toggleKey))`.
+
+#### `ChoiceRow`
+
+A setting picked from a list. The row shows the current item; a click opens the list over the page.
+
+```csharp
+new ChoiceRow("Difficulty", () => _diff, v => _diff = v, "Easy", "Normal", "Hard")
+    .Saved("Difficulty")
+
+new ChoiceRow("Font", () => _font, v => _font = v, new List<Option>
+{
+    new Option("goblin", "Goblin Menu", "Cyrillic letters in the menu style", "Font mods"),
+    new Option("roboto", "Roboto", "The game's plain font", "Game fonts"),
+})
+    .Searchable()                        // search field (shown by itself from 10 items on)
+    .Filters("Font mods", "Game fonts")  // filter buttons, matched against Option tags
+    .Description("Font for the main menu")
+```
+
+- The value is the item's **key** (`string`), so adding, removing or reordering items never turns a saved choice into another one.
+- For a list that changes while the game runs, pass `() => CurrentOptions()` instead of a fixed list.
+- `.Saved(key)` keeps the choice in `MelonPreferences.cfg`; `.Description(text)` adds a line under the label that wraps if it is long.
+- Only the visible items are drawn, so long lists stay fast.
 
 #### `ButtonEntry`
 

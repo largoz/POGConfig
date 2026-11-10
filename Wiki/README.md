@@ -12,6 +12,7 @@ Developer documentation for `POGConfig`.
 - `05_Entry_Slider.md`
 - `06_Entry_OptionsSlider.md`
 - `07_Entry_Key.md`
+- `08_Entry_Choice.md`
 
 
 ## Coverage Checklist

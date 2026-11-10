@@ -1573,7 +1573,7 @@ namespace POGMods.Config
 
     public class PogConfigMelon : MelonMod
     {
-        public const string VERSION = "1.0.13";
+        public const string VERSION = "1.1.0";
 
         public override void OnInitializeMelon()
         {

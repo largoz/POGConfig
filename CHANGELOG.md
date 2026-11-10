@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.0
+
+**New**
+
+- **`ChoiceRow`: a setting picked from a list.** The row shows the current item; a click opens a list over the page, with a search field, filter buttons and a line of explanation per item. Type to search; arrows, Page Up/Down, Home/End, Enter and the wheel work; Esc or a click outside closes it without a change. Only the visible items are drawn, so a list of thousands is as fast as a list of ten. The value is the item's key, so changing the list never turns a saved choice into another one. See README, "ChoiceRow".
+- **Bigger panel and text, and one number to scale them.** The panel is larger (1040 x 650 units) and everything in it is scaled by `UIScale` in `[POG_Config]` of `MelonPreferences.cfg`: 1.35 by default, 0.75 to 2, applied at once. 1 is the size before this version.
+- Rows can be taller than the standard height when they need it (a `ChoiceRow` with a long description).
+
+**Fixes**
+
+- The sidebar and the separator next to it started above the content area and touched the title; they now start under the title bar.
+- A mod's description in the page header was cut off with an ellipsis. Version and author now have their own line and the description wraps underneath.
+- Slimmer, less bright scrollbar.
+
+**Compatibility**
+
+- Nothing was removed or renamed. Checked in game: Goblin Overhead HUD 1.0.1 and POG POV Changer 1.0.2 (which finds `KeyEntry` by reflection) register their settings as before.
+
 ## 1.0.13
 
 **New**
