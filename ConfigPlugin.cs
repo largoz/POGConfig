@@ -1588,6 +1588,8 @@ namespace POGMods.Config
                                     $"using overlay fallback: {ex.Message}");
             }
 
+            Theme.Load();
+
             var runner = new GameObject("POGConfigRunner");
             UnityEngine.Object.DontDestroyOnLoad(runner);
             runner.hideFlags = HideFlags.HideAndDontSave;
@@ -1645,8 +1647,9 @@ namespace POGMods.Config
             RequestClose();
         }
 
-        private const float PANEL_W    = 980f;
-        private const float PANEL_H    = 600f;
+        // Canvas units; Theme.Scale scales the whole canvas on top of these.
+        private const float PANEL_W    = 1040f;
+        private const float PANEL_H    = 650f;
         private const float TOP_H      = 68f;
         private const float BOT_H      = 24f;
         private const float SB_W       = 14f;
@@ -2675,8 +2678,10 @@ namespace POGMods.Config
                 canvas.sortingOrder = 9999;
                 var scaler = canvasGo.AddComponent<CanvasScaler>();
                 scaler.uiScaleMode         = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-                scaler.referenceResolution = new Vector2(1920, 1080);
+                scaler.referenceResolution = Theme.ReferenceResolution;
                 scaler.matchWidthOrHeight  = 0.5f;
+                // One number grows the whole panel, text included: see Theme.
+                Theme.ScaleChanged += () => { if (scaler != null) scaler.referenceResolution = Theme.ReferenceResolution; };
                 canvasGo.AddComponent<GraphicRaycaster>();
 
                 if (UnityEngine.Object.FindObjectOfType<EventSystem>() == null)
