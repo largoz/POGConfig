@@ -146,7 +146,8 @@ namespace POGMods.Config
     /// <summary>Visual section header within a mod's settings list. Has no value, no persistence.</summary>
     public class HeaderEntry : ConfigEntry
     {
-        public override float Height => 28f;
+        // Sizes come from the style cascade (Theme.Defaults, level 1), not from numbers here.
+        public override float Height => Theme.Defaults["header-height"];
         public HeaderEntry(string label) : base(label) { }
 
         internal override void BuildRowInto(GameObject row, TMP_FontAsset font)
@@ -157,14 +158,17 @@ namespace POGMods.Config
             var lRt = UI.Rt(lineGo);
             lRt.anchorMin = new Vector2(0, 0); lRt.anchorMax = new Vector2(1, 0);
             lRt.pivot = new Vector2(0.5f, 0); lRt.sizeDelta = new Vector2(0, 1);
-            lRt.anchoredPosition = new Vector2(0, 4);
+            lRt.anchoredPosition = new Vector2(0, Theme.Defaults["header-line-offset"]);
             UI.AddImage(lineGo, new Color(1f, 0.82f, 0.3f, 0.25f), false);
 
+            // The text stands on its own strip above the line. With the line 4 units up and the text
+            // bottom-aligned to the row's bottom edge, the line ran through the lower part of the letters
+            // (1.1.0, seen 2026-11-10).
             var lblGo = UI.Make("Header", row.transform);
             var lblRt = UI.Rt(lblGo);
             lblRt.anchorMin = Vector2.zero; lblRt.anchorMax = Vector2.one;
-            lblRt.offsetMin = lblRt.offsetMax = Vector2.zero;
-            var t = UI.AddText(lblGo, Label, font, 13, new Color(1f, 0.82f, 0.3f),
+            lblRt.offsetMin = new Vector2(0, Theme.Defaults["header-text-bottom"]); lblRt.offsetMax = Vector2.zero;
+            var t = UI.AddText(lblGo, Label, font, (int)Theme.Defaults["font-size-header"], new Color(1f, 0.82f, 0.3f),
                                TextAlignmentOptions.BottomLeft);
             t.fontStyle = FontStyles.Bold | FontStyles.UpperCase;
         }
@@ -1573,7 +1577,7 @@ namespace POGMods.Config
 
     public class PogConfigMelon : MelonMod
     {
-        public const string VERSION = "1.1.0";
+        public const string VERSION = "1.1.1";
 
         public override void OnInitializeMelon()
         {

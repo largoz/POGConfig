@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+**Fixes**
+
+- Section headings: the yellow line under a heading ran through the lower part of its letters. It now sits under the text.
+
 ## 1.1.0
 
 **New**

@@ -19,7 +19,6 @@ Mods that support POG Config add their settings to this panel, so you get one pl
 - Settings are saved automatically.
 - `Esc` cancels what you are doing (typing a value, waiting for a key, an open list) and otherwise closes the panel.
 - Settings with many choices open a **list** with search and filter buttons. Type to search; arrows, Enter and Esc work too.
-- **Bigger panel and text.** To make it bigger or smaller, set `UIScale` under `[POG_Config]` in `UserData/MelonPreferences.cfg` (1.35 by default, 0.75 to 2; 1 is the size before 1.1.0). It applies at once.
 
 ---
 

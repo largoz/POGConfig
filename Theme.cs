@@ -13,10 +13,11 @@ namespace POGMods.Config
     /// shrinks the whole panel, text included. The player sets it in
     /// <c>UserData/MelonPreferences.cfg</c>, <c>[POG_Config] UIScale</c>; it applies at once.</para>
     ///
-    /// <para><b>Styles cascade like CSS.</b> A property (<c>font-size</c>, <c>row-height</c>…) comes
-    /// from the strongest level that sets it: POG Config's defaults, then the player, then a mod's page,
-    /// then a row type, then a single row. This class holds the first level; the others arrive with the
-    /// modular rows (docs/design/modular-rows.md §7). Sizes are in units before <see cref="Scale"/>.</para>
+    /// <para><b>One look for every mod.</b> Sizes are named properties (<c>font-size-label</c>,
+    /// <c>row-height</c>…) kept here instead of numbers spread through the code, and they are the same on
+    /// every mod's page: a mod does not set its own sizes or colours. Only the player changes the look, and
+    /// only all of it at once, through <see cref="Scale"/>, like zoom in a browser
+    /// (docs/design/modular-rows.md §7). Sizes are in units before <see cref="Scale"/>.</para>
     /// </summary>
     public static class Theme
     {
@@ -33,7 +34,7 @@ namespace POGMods.Config
         /// <summary>The canvas reference resolution that produces <see cref="Scale"/>.</summary>
         internal static Vector2 ReferenceResolution => BaseReference / Scale;
 
-        /// <summary>Level 1 of the cascade: POG Config's own defaults, in units before <see cref="Scale"/>.</summary>
+        /// <summary>The panel's sizes, in units before <see cref="Scale"/>. The same for every mod.</summary>
         public static readonly IReadOnlyDictionary<string, float> Defaults = new Dictionary<string, float>
         {
             ["font-size-title"] = 22f,
@@ -43,6 +44,8 @@ namespace POGMods.Config
             ["font-size-small"] = 12f,
             ["row-height"] = 40f,
             ["header-height"] = 28f,
+            ["header-text-bottom"] = 6f,   // gap between a section heading's text and the row's bottom edge
+            ["header-line-offset"] = 1f,   // the heading's underline, from the row's bottom edge
             ["row-gap"] = 2f,
         };
 
